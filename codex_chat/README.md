@@ -28,3 +28,17 @@ python3 relay/codex_relay.py --host 0.0.0.0 --port 8765
 - Choose a thread from the left list.
 - Send messages in the composer.
 - `Ctrl+Enter` / `Cmd+Enter` sends message quickly.
+
+## Release process (prebuilt images)
+1. Bump `version` in `config.yaml`.
+2. Push commit to GitHub.
+3. Create matching tag `v<version>` and push it.
+4. Wait for workflow `Build Add-on Images` to publish GHCR images.
+
+The add-on uses:
+- `image: ghcr.io/olekspa/{arch}-codex_chat`
+
+So version `0.1.1` must exist as image tags:
+- `ghcr.io/olekspa/amd64-codex_chat:0.1.1`
+- `ghcr.io/olekspa/aarch64-codex_chat:0.1.1`
+- `ghcr.io/olekspa/armv7-codex_chat:0.1.1`
