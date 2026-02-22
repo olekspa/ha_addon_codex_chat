@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from pydantic import BaseModel
 OPTIONS_PATH = Path("/data/options.json")
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
+LOG = logging.getLogger("codex-chat-addon")
 
 
 class Settings(BaseModel):
@@ -44,7 +46,7 @@ def load_settings() -> Settings:
     )
 
 
-app = FastAPI(title="Codex Chat Add-on", version="0.1.0")
+app = FastAPI(title="Codex Chat Add-on", version="0.1.2")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -81,37 +83,63 @@ def relay_headers(settings: Settings) -> dict[str, str]:
     return headers
 
 
+def relay_base_url(settings: Settings) -> str:
+    return settings.relay_url.rstrip("/")
+
+
 async def relay_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     settings = load_settings()
+    url = f"{relay_base_url(settings)}{path}"
     async with httpx.AsyncClient(timeout=settings.wait_timeout + 15) as client:
         try:
             resp = await client.get(
-                f"{settings.relay_url.rstrip('/')}{path}",
+                url,
                 headers=relay_headers(settings),
                 params=params,
             )
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Relay unreachable: {exc}") from exc
+            LOG.exception("Relay GET failed url=%s params=%s error=%s", url, params, type(exc).__name__)
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "Relay unreachable",
+                    "url": url,
+                    "exception": type(exc).__name__,
+                    "message": str(exc),
+                },
+            ) from exc
 
     if resp.status_code >= 400:
+        LOG.warning("Relay GET non-2xx url=%s status=%s body=%s", url, resp.status_code, resp.text[:400])
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
     return resp.json()
 
 
 async def relay_post(path: str, body: dict[str, Any], params: dict[str, Any] | None = None) -> dict[str, Any]:
     settings = load_settings()
+    url = f"{relay_base_url(settings)}{path}"
     async with httpx.AsyncClient(timeout=settings.wait_timeout + 30) as client:
         try:
             resp = await client.post(
-                f"{settings.relay_url.rstrip('/')}{path}",
+                url,
                 headers=relay_headers(settings),
                 params=params,
                 json=body,
             )
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Relay unreachable: {exc}") from exc
+            LOG.exception("Relay POST failed url=%s params=%s error=%s", url, params, type(exc).__name__)
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "Relay unreachable",
+                    "url": url,
+                    "exception": type(exc).__name__,
+                    "message": str(exc),
+                },
+            ) from exc
 
     if resp.status_code >= 400:
+        LOG.warning("Relay POST non-2xx url=%s status=%s body=%s", url, resp.status_code, resp.text[:400])
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
     return resp.json()
 
@@ -125,6 +153,31 @@ async def api_health() -> dict[str, Any]:
         "addon": "codex_chat",
         "relay_url": settings.relay_url,
         "relay": relay_health,
+    }
+
+
+@app.get("/api/diagnostics")
+async def api_diagnostics() -> dict[str, Any]:
+    settings = load_settings()
+    relay_url = relay_base_url(settings)
+    token_present = bool(settings.relay_token)
+    try:
+        relay = await relay_get("/health")
+        relay_ok = True
+        relay_error = None
+    except HTTPException as exc:
+        relay_ok = False
+        relay = None
+        relay_error = exc.detail
+
+    return {
+        "ok": relay_ok,
+        "relay_url": relay_url,
+        "relay_token_present": token_present,
+        "wait_timeout": settings.wait_timeout,
+        "poll_interval": settings.poll_interval,
+        "relay_health": relay,
+        "relay_error": relay_error,
     }
 
 
@@ -179,3 +232,16 @@ async def api_turn_start(thread_id: str, body: TurnBody) -> dict[str, Any]:
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(str(STATIC_DIR / "index.html"))
+
+
+@app.on_event("startup")
+async def startup_log() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    settings = load_settings()
+    LOG.info(
+        "Codex Chat add-on started relay_url=%s relay_token_present=%s wait_timeout=%s poll_interval=%s",
+        relay_base_url(settings),
+        bool(settings.relay_token),
+        settings.wait_timeout,
+        settings.poll_interval,
+    )
