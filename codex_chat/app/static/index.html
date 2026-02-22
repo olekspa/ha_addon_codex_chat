@@ -157,6 +157,7 @@
       threads: [],
       selectedThreadId: null,
       busy: false,
+      autoRefreshTimer: null,
     };
 
     function setStatus(text, isError = false) {
@@ -240,11 +241,11 @@
       }
     }
 
-    async function loadThread(threadId) {
-      setStatus('Loading thread...');
+    async function loadThread(threadId, silent = false) {
+      if (!silent) setStatus('Loading thread...');
       const data = await api(`./api/threads/${threadId}?includeTurns=true`);
       renderThreadMessages(data);
-      setStatus(`Thread ${threadId.slice(0,8)} loaded`);
+      if (!silent) setStatus(`Thread ${threadId.slice(0,8)} loaded`);
     }
 
     async function createThread() {
@@ -307,8 +308,21 @@
     el.resumeBtn.onclick = () => resumeThread().catch(e => setStatus(String(e), true));
     el.sendBtn.onclick = () => sendMessage();
     el.input.addEventListener('keydown', (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') sendMessage();
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
     });
+
+    // Lightweight near-real-time refresh so replies from relay appear without manual actions.
+    state.autoRefreshTimer = setInterval(async () => {
+      if (!state.selectedThreadId || state.busy) return;
+      try {
+        await loadThread(state.selectedThreadId, true);
+      } catch (_err) {
+        // Ignore transient poll errors; explicit actions still surface errors.
+      }
+    }, 2500);
 
     loadThreads().catch(e => setStatus(String(e), true));
   </script>
