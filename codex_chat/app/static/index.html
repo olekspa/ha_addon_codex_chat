@@ -46,6 +46,15 @@
       gap: 8px;
     }
     .title { font-weight: 700; letter-spacing: 0.2px; }
+    .toolbar { display: flex; gap: 8px; align-items: center; }
+    .toolbar input, .toolbar select {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 6px 8px;
+      font: inherit;
+      background: #fff;
+      color: var(--ink);
+    }
     .threads { overflow: auto; height: calc(100% - 54px); }
     .thread {
       padding: 10px 12px;
@@ -78,6 +87,8 @@
     }
     .msg.user { background: #f0fdfa; border-color: #99f6e4; align-self: flex-end; }
     .msg.agent { background: #f8fafc; align-self: flex-start; }
+    .msg.pending { border-style: dashed; opacity: 0.9; }
+    .msg.failed { border-color: #fca5a5; background: #fff1f2; }
     .composer {
       border-top: 1px solid var(--line);
       padding: 10px;
@@ -119,7 +130,10 @@
     <section class="panel">
       <div class="sidebar-header">
         <div class="title">Threads</div>
-        <button id="refreshBtn" class="secondary">Refresh</button>
+        <div class="toolbar">
+          <input id="searchInput" placeholder="Search" />
+          <button id="refreshBtn" class="secondary">Refresh</button>
+        </div>
       </div>
       <div id="threads" class="threads"></div>
     </section>
@@ -130,13 +144,26 @@
           <div class="title">Codex Chat</div>
           <div id="status" class="status">Loading...</div>
         </div>
-        <button id="newThreadBtn" class="secondary">New Thread</button>
+        <div class="toolbar">
+          <label><input id="autoRefreshToggle" type="checkbox" checked /> Auto</label>
+          <select id="autoRefreshInterval">
+            <option value="1.5">1.5s</option>
+            <option value="2.5" selected>2.5s</option>
+            <option value="5">5s</option>
+          </select>
+          <button id="pinBtn" class="secondary">Pin</button>
+          <button id="archiveBtn" class="secondary">Archive</button>
+          <button id="unarchiveBtn" class="secondary">Unarchive</button>
+          <button id="materializeBtn" class="secondary">Materialize</button>
+          <button id="newThreadBtn" class="secondary">New Thread</button>
+        </div>
       </div>
       <div id="messages" class="messages"></div>
       <div class="composer">
         <textarea id="input" placeholder="Send message to selected thread..."></textarea>
         <button id="resumeBtn" class="secondary">Resume</button>
         <button id="sendBtn">Send</button>
+        <button id="retryBtn" class="secondary" style="display:none;">Retry</button>
       </div>
     </section>
   </div>
@@ -148,9 +175,17 @@
       status: document.getElementById('status'),
       input: document.getElementById('input'),
       refreshBtn: document.getElementById('refreshBtn'),
+      searchInput: document.getElementById('searchInput'),
       newThreadBtn: document.getElementById('newThreadBtn'),
       resumeBtn: document.getElementById('resumeBtn'),
       sendBtn: document.getElementById('sendBtn'),
+      retryBtn: document.getElementById('retryBtn'),
+      pinBtn: document.getElementById('pinBtn'),
+      archiveBtn: document.getElementById('archiveBtn'),
+      unarchiveBtn: document.getElementById('unarchiveBtn'),
+      materializeBtn: document.getElementById('materializeBtn'),
+      autoRefreshToggle: document.getElementById('autoRefreshToggle'),
+      autoRefreshInterval: document.getElementById('autoRefreshInterval'),
     };
 
     const state = {
@@ -158,6 +193,9 @@
       selectedThreadId: null,
       busy: false,
       autoRefreshTimer: null,
+      lastThreadUpdatedAt: 0,
+      pinnedThreadIds: new Set(JSON.parse(localStorage.getItem('codexPinnedThreads') || '[]')),
+      lastFailedMessage: null,
     };
 
     function setStatus(text, isError = false) {
@@ -183,12 +221,22 @@
 
     function renderThreads() {
       el.threads.innerHTML = '';
-      for (const t of state.threads) {
+      const q = (el.searchInput.value || '').trim().toLowerCase();
+      const sorted = [...state.threads].sort((a, b) => {
+        const ap = state.pinnedThreadIds.has(a.id) ? 1 : 0;
+        const bp = state.pinnedThreadIds.has(b.id) ? 1 : 0;
+        if (ap !== bp) return bp - ap;
+        return (b.updatedAt || 0) - (a.updatedAt || 0);
+      });
+      for (const t of sorted) {
+        const preview = (t.preview || '(no preview)');
+        if (q && !preview.toLowerCase().includes(q) && !t.id.toLowerCase().includes(q)) continue;
         const div = document.createElement('div');
         div.className = 'thread' + (t.id === state.selectedThreadId ? ' active' : '');
         const dt = new Date((t.updatedAt || t.createdAt || 0) * 1000);
+        const pin = state.pinnedThreadIds.has(t.id) ? '[PIN] ' : '';
         div.innerHTML = `
-          <div class="preview">${(t.preview || '(no preview)').replaceAll('<','&lt;')}</div>
+          <div class="preview">${pin}${preview.replaceAll('<','&lt;')}</div>
           <div class="meta">${t.id.slice(0,8)} • ${t.source || 'unknown'} • ${isNaN(dt) ? '' : dt.toLocaleString()}</div>
         `;
         div.onclick = async () => {
@@ -200,9 +248,9 @@
       }
     }
 
-    function pushMessage(type, text) {
+    function pushMessage(type, text, extraClass = '') {
       const d = document.createElement('div');
-      d.className = 'msg ' + (type === 'user' ? 'user' : 'agent');
+      d.className = 'msg ' + (type === 'user' ? 'user' : 'agent') + (extraClass ? ` ${extraClass}` : '');
       d.textContent = text || '';
       el.messages.appendChild(d);
       el.messages.scrollTop = el.messages.scrollHeight;
@@ -230,6 +278,7 @@
       setStatus('Loading threads...');
       const data = await api('./api/threads?limit=50&sourceKinds=vscode');
       state.threads = data.data || [];
+      state.lastThreadUpdatedAt = state.threads.reduce((m, t) => Math.max(m, t.updatedAt || 0), 0);
       if (!state.selectedThreadId && state.threads.length) {
         state.selectedThreadId = state.threads[0].id;
       }
@@ -245,6 +294,8 @@
       if (!silent) setStatus('Loading thread...');
       const data = await api(`./api/threads/${threadId}?includeTurns=true`);
       renderThreadMessages(data);
+      const found = state.threads.find(t => t.id === threadId);
+      if (found && found.updatedAt) state.lastThreadUpdatedAt = Math.max(state.lastThreadUpdatedAt, found.updatedAt);
       if (!silent) setStatus(`Thread ${threadId.slice(0,8)} loaded`);
     }
 
@@ -282,7 +333,8 @@
       el.sendBtn.disabled = true;
 
       try {
-        pushMessage('user', text);
+        pushMessage('user', text, 'pending');
+        pushMessage('agent', 'Waiting for model response...', 'pending');
         el.input.value = '';
         setStatus('Sending...');
 
@@ -295,8 +347,13 @@
         renderThreadMessages(read);
         setStatus('Completed');
         await loadThreads();
+        state.lastFailedMessage = null;
+        el.retryBtn.style.display = 'none';
       } catch (err) {
         setStatus(String(err), true);
+        state.lastFailedMessage = text;
+        el.retryBtn.style.display = 'inline-block';
+        pushMessage('agent', `Failed: ${String(err)}`, 'failed');
       } finally {
         state.busy = false;
         el.sendBtn.disabled = false;
@@ -306,7 +363,56 @@
     el.refreshBtn.onclick = () => loadThreads().catch(e => setStatus(String(e), true));
     el.newThreadBtn.onclick = () => createThread().catch(e => setStatus(String(e), true));
     el.resumeBtn.onclick = () => resumeThread().catch(e => setStatus(String(e), true));
+    el.searchInput.oninput = () => renderThreads();
     el.sendBtn.onclick = () => sendMessage();
+    el.retryBtn.onclick = async () => {
+      if (!state.lastFailedMessage) return;
+      el.input.value = state.lastFailedMessage;
+      await sendMessage();
+    };
+    el.pinBtn.onclick = () => {
+      if (!state.selectedThreadId) return;
+      if (state.pinnedThreadIds.has(state.selectedThreadId)) state.pinnedThreadIds.delete(state.selectedThreadId);
+      else state.pinnedThreadIds.add(state.selectedThreadId);
+      localStorage.setItem('codexPinnedThreads', JSON.stringify([...state.pinnedThreadIds]));
+      renderThreads();
+    };
+    el.archiveBtn.onclick = async () => {
+      if (!state.selectedThreadId) return;
+      try {
+        await api(`./api/threads/${state.selectedThreadId}/archive`, {
+          method: 'POST',
+          body: JSON.stringify({ archived: true }),
+        });
+        setStatus('Archived');
+        await loadThreads();
+      } catch (e) {
+        setStatus(String(e), true);
+      }
+    };
+    el.unarchiveBtn.onclick = async () => {
+      if (!state.selectedThreadId) return;
+      try {
+        await api(`./api/threads/${state.selectedThreadId}/archive`, {
+          method: 'POST',
+          body: JSON.stringify({ archived: false }),
+        });
+        setStatus('Unarchived');
+        await loadThreads();
+      } catch (e) {
+        setStatus(String(e), true);
+      }
+    };
+    el.materializeBtn.onclick = async () => {
+      if (!state.selectedThreadId) return;
+      try {
+        await api(`./api/threads/${state.selectedThreadId}/materialize`, { method: 'POST', body: '{}' });
+        setStatus('Materialized');
+        await loadThread(state.selectedThreadId);
+      } catch (e) {
+        setStatus(String(e), true);
+      }
+    };
     el.input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
@@ -314,15 +420,24 @@
       }
     });
 
-    // Lightweight near-real-time refresh so replies from relay appear without manual actions.
-    state.autoRefreshTimer = setInterval(async () => {
-      if (!state.selectedThreadId || state.busy) return;
-      try {
-        await loadThread(state.selectedThreadId, true);
-      } catch (_err) {
-        // Ignore transient poll errors; explicit actions still surface errors.
-      }
-    }, 2500);
+    function resetAutoRefreshTimer() {
+      if (state.autoRefreshTimer) clearInterval(state.autoRefreshTimer);
+      state.autoRefreshTimer = setInterval(async () => {
+        if (!el.autoRefreshToggle.checked || !state.selectedThreadId || state.busy) return;
+        try {
+          const delta = await api(`./api/threads?limit=50&sourceKinds=vscode&updatedAfter=${state.lastThreadUpdatedAt}`);
+          if ((delta.data || []).length > 0) {
+            await loadThreads();
+            await loadThread(state.selectedThreadId, true);
+          }
+        } catch (_err) {
+          // Ignore transient poll errors; explicit actions still surface errors.
+        }
+      }, Math.max(800, Number(el.autoRefreshInterval.value) * 1000));
+    }
+    el.autoRefreshToggle.onchange = () => resetAutoRefreshTimer();
+    el.autoRefreshInterval.onchange = () => resetAutoRefreshTimer();
+    resetAutoRefreshTimer();
 
     loadThreads().catch(e => setStatus(String(e), true));
   </script>

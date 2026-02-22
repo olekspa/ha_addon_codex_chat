@@ -1,5 +1,5 @@
 name: Codex Chat
-version: 0.1.6
+version: 0.2.0
 slug: codex_chat
 description: Chat with Codex relay from Home Assistant (threads, history, resume, turns).
 url: https://github.com/olekspa/ha_addon_codex_chat

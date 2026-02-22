@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,9 @@ OPTIONS_PATH = Path("/data/options.json")
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 LOG = logging.getLogger("codex-chat-addon")
+THREADS_CACHE_TTL_S = 2.5
+THREADS_CACHE_LOCK = threading.Lock()
+THREADS_CACHE: dict[str, Any] = {"key": None, "expires": 0.0, "data": None}
 
 
 class Settings(BaseModel):
@@ -48,7 +52,7 @@ def load_settings() -> Settings:
     )
 
 
-app = FastAPI(title="Codex Chat Add-on", version="0.1.2")
+app = FastAPI(title="Codex Chat Add-on", version="0.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -76,6 +80,10 @@ class TurnBody(BaseModel):
     text: str
     wait: bool | None = None
     waitTimeout: int | None = None
+
+
+class ThreadArchiveBody(BaseModel):
+    archived: bool = True
 
 
 def relay_headers(settings: Settings) -> dict[str, str]:
@@ -232,15 +240,42 @@ async def api_threads(
     cursor: str | None = None,
     sourceKinds: str | None = "vscode",
     archived: bool | None = None,
+    updatedAfter: int | None = None,
 ) -> dict[str, Any]:
-    params: dict[str, Any] = {"limit": limit}
+    params: dict[str, Any] = {}
+    cache_key = json.dumps(
+        {"limit": limit, "cursor": cursor, "sourceKinds": sourceKinds, "archived": archived},
+        sort_keys=True,
+    )
+    now = time.time()
     if cursor:
         params["cursor"] = cursor
     if sourceKinds:
         params["sourceKinds"] = sourceKinds
     if archived is not None:
         params["archived"] = str(archived).lower()
-    return await relay_get("/threads", params=params)
+    params["limit"] = limit
+
+    with THREADS_CACHE_LOCK:
+        cached = THREADS_CACHE["data"] if THREADS_CACHE["key"] == cache_key and THREADS_CACHE["expires"] > now else None
+
+    if cached is None:
+        data = await relay_get("/threads", params=params)
+        with THREADS_CACHE_LOCK:
+            THREADS_CACHE["key"] = cache_key
+            THREADS_CACHE["expires"] = time.time() + THREADS_CACHE_TTL_S
+            THREADS_CACHE["data"] = data
+    else:
+        data = cached
+
+    if updatedAfter is None:
+        return data
+
+    rows = data.get("data", [])
+    if not isinstance(rows, list):
+        return data
+    filtered = [row for row in rows if isinstance(row, dict) and int(row.get("updatedAt", 0)) > updatedAfter]
+    return {"data": filtered, "nextCursor": data.get("nextCursor")}
 
 
 @app.get("/api/threads/{thread_id}")
@@ -269,6 +304,24 @@ async def api_thread_start(body: ThreadStartBody) -> dict[str, Any]:
 async def api_thread_resume(thread_id: str, body: ThreadResumeBody) -> dict[str, Any]:
     payload = body.model_dump(exclude_none=True)
     return await relay_post(f"/threads/{thread_id}/resume", payload)
+
+
+@app.post("/api/threads/{thread_id}/archive")
+async def api_thread_archive(thread_id: str, body: ThreadArchiveBody) -> dict[str, Any]:
+    # Use generic rpc endpoint to support archive/unarchive without relay-specific wrappers.
+    method = "thread/archive" if body.archived else "thread/unarchive"
+    out = await relay_post("/rpc", {"method": method, "params": {"threadId": thread_id}})
+    return out.get("result", out)
+
+
+@app.post("/api/threads/{thread_id}/materialize")
+async def api_thread_materialize(thread_id: str) -> dict[str, Any]:
+    # Ensure thread exists in current app-server context and returns a stable read shape.
+    try:
+        await relay_post(f"/threads/{thread_id}/resume", {})
+    except HTTPException:
+        pass
+    return await api_thread_read(thread_id=thread_id, includeTurns=False)
 
 
 @app.post("/api/threads/{thread_id}/turns")

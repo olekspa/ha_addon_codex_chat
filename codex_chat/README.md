@@ -7,6 +7,9 @@ Home Assistant add-on that provides a chat UI and backend proxy for a Codex rela
 - Start new threads and resume existing threads.
 - Send chat turns and wait for completion.
 - Keeps relay token server-side (not exposed to browser JS).
+- Thread UX: search, pinning, archive/unarchive, explicit materialize action.
+- Message UX: Enter-to-send, retry failed send, pending/failed states.
+- Performance: short thread-list cache and delta-based polling support.
 
 ## Add-on Options
 - `relay_url`: Base URL of your relay service, e.g. `http://192.168.1.50:8765`
