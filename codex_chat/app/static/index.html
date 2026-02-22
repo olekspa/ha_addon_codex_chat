@@ -165,7 +165,8 @@
     }
 
     async function api(path, options = {}) {
-      const res = await fetch(path, {
+      const safePath = path.startsWith('/') ? `.${path}` : path;
+      const res = await fetch(safePath, {
         ...options,
         headers: {
           'Content-Type': 'application/json',
@@ -226,7 +227,7 @@
 
     async function loadThreads() {
       setStatus('Loading threads...');
-      const data = await api('/api/threads?limit=50&sourceKinds=vscode');
+      const data = await api('./api/threads?limit=50&sourceKinds=vscode');
       state.threads = data.data || [];
       if (!state.selectedThreadId && state.threads.length) {
         state.selectedThreadId = state.threads[0].id;
@@ -241,14 +242,14 @@
 
     async function loadThread(threadId) {
       setStatus('Loading thread...');
-      const data = await api(`/api/threads/${threadId}?includeTurns=true`);
+      const data = await api(`./api/threads/${threadId}?includeTurns=true`);
       renderThreadMessages(data);
       setStatus(`Thread ${threadId.slice(0,8)} loaded`);
     }
 
     async function createThread() {
       setStatus('Creating thread...');
-      const data = await api('/api/threads/start', {
+      const data = await api('./api/threads/start', {
         method: 'POST',
         body: JSON.stringify({ approvalPolicy: 'never' }),
       });
@@ -262,7 +263,7 @@
     async function resumeThread() {
       if (!state.selectedThreadId) return;
       setStatus('Resuming thread...');
-      await api(`/api/threads/${state.selectedThreadId}/resume`, {
+      await api(`./api/threads/${state.selectedThreadId}/resume`, {
         method: 'POST',
         body: JSON.stringify({}),
       });
@@ -284,7 +285,7 @@
         el.input.value = '';
         setStatus('Sending...');
 
-        const out = await api(`/api/threads/${state.selectedThreadId}/turns`, {
+        const out = await api(`./api/threads/${state.selectedThreadId}/turns`, {
           method: 'POST',
           body: JSON.stringify({ text, wait: true }),
         });
