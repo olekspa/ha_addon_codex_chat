@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Codex Chat</title>
+  <style>
+    :root {
+      --bg: #f7f5ef;
+      --panel: #ffffff;
+      --ink: #17212b;
+      --muted: #6b7280;
+      --line: #d7d9dd;
+      --accent: #0f766e;
+      --accent-2: #115e59;
+      --warn: #b91c1c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      background: radial-gradient(circle at 10% 0%, #fff8e1 0%, var(--bg) 48%), var(--bg);
+      color: var(--ink);
+      min-height: 100vh;
+    }
+    .app {
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      gap: 12px;
+      height: 100vh;
+      padding: 12px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.04);
+      overflow: hidden;
+    }
+    .sidebar-header, .chat-header {
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .title { font-weight: 700; letter-spacing: 0.2px; }
+    .threads { overflow: auto; height: calc(100% - 54px); }
+    .thread {
+      padding: 10px 12px;
+      border-bottom: 1px solid #eceef1;
+      cursor: pointer;
+    }
+    .thread:hover { background: #f8fafc; }
+    .thread.active { background: #ecfeff; border-left: 3px solid var(--accent); padding-left: 9px; }
+    .thread .preview { font-size: 13px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .thread .meta { font-size: 11px; color: var(--muted); margin-top: 3px; }
+    .chat {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      height: 100%;
+    }
+    .messages {
+      padding: 14px;
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .msg {
+      max-width: 860px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      line-height: 1.35;
+      white-space: pre-wrap;
+    }
+    .msg.user { background: #f0fdfa; border-color: #99f6e4; align-self: flex-end; }
+    .msg.agent { background: #f8fafc; align-self: flex-start; }
+    .composer {
+      border-top: 1px solid var(--line);
+      padding: 10px;
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 8px;
+    }
+    textarea {
+      width: 100%;
+      min-height: 72px;
+      resize: vertical;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      font: inherit;
+      color: var(--ink);
+    }
+    button {
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-weight: 600;
+      cursor: pointer;
+      background: var(--accent);
+      color: #fff;
+    }
+    button.secondary { background: #334155; }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    .status { color: var(--muted); font-size: 12px; }
+    .error { color: var(--warn); }
+    @media (max-width: 980px) {
+      .app { grid-template-columns: 1fr; height: auto; min-height: 100vh; }
+      .panel { min-height: 36vh; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <section class="panel">
+      <div class="sidebar-header">
+        <div class="title">Threads</div>
+        <button id="refreshBtn" class="secondary">Refresh</button>
+      </div>
+      <div id="threads" class="threads"></div>
+    </section>
+
+    <section class="panel chat">
+      <div class="chat-header">
+        <div>
+          <div class="title">Codex Chat</div>
+          <div id="status" class="status">Loading...</div>
+        </div>
+        <button id="newThreadBtn" class="secondary">New Thread</button>
+      </div>
+      <div id="messages" class="messages"></div>
+      <div class="composer">
+        <textarea id="input" placeholder="Send message to selected thread..."></textarea>
+        <button id="resumeBtn" class="secondary">Resume</button>
+        <button id="sendBtn">Send</button>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const el = {
+      threads: document.getElementById('threads'),
+      messages: document.getElementById('messages'),
+      status: document.getElementById('status'),
+      input: document.getElementById('input'),
+      refreshBtn: document.getElementById('refreshBtn'),
+      newThreadBtn: document.getElementById('newThreadBtn'),
+      resumeBtn: document.getElementById('resumeBtn'),
+      sendBtn: document.getElementById('sendBtn'),
+    };
+
+    const state = {
+      threads: [],
+      selectedThreadId: null,
+      busy: false,
+    };
+
+    function setStatus(text, isError = false) {
+      el.status.textContent = text;
+      el.status.className = isError ? 'status error' : 'status';
+    }
+
+    async function api(path, options = {}) {
+      const res = await fetch(path, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(options.headers || {}),
+        },
+      });
+      const txt = await res.text();
+      let data;
+      try { data = txt ? JSON.parse(txt) : {}; } catch { data = { raw: txt }; }
+      if (!res.ok) throw new Error(typeof data === 'string' ? data : (data.detail || data.error || txt));
+      return data;
+    }
+
+    function renderThreads() {
+      el.threads.innerHTML = '';
+      for (const t of state.threads) {
+        const div = document.createElement('div');
+        div.className = 'thread' + (t.id === state.selectedThreadId ? ' active' : '');
+        const dt = new Date((t.updatedAt || t.createdAt || 0) * 1000);
+        div.innerHTML = `
+          <div class="preview">${(t.preview || '(no preview)').replaceAll('<','&lt;')}</div>
+          <div class="meta">${t.id.slice(0,8)} • ${t.source || 'unknown'} • ${isNaN(dt) ? '' : dt.toLocaleString()}</div>
+        `;
+        div.onclick = async () => {
+          state.selectedThreadId = t.id;
+          renderThreads();
+          await loadThread(t.id);
+        };
+        el.threads.appendChild(div);
+      }
+    }
+
+    function pushMessage(type, text) {
+      const d = document.createElement('div');
+      d.className = 'msg ' + (type === 'user' ? 'user' : 'agent');
+      d.textContent = text || '';
+      el.messages.appendChild(d);
+      el.messages.scrollTop = el.messages.scrollHeight;
+    }
+
+    function renderThreadMessages(threadData) {
+      el.messages.innerHTML = '';
+      const turns = threadData?.thread?.turns || [];
+      for (const turn of turns) {
+        for (const item of turn.items || []) {
+          if (item.type === 'userMessage') {
+            const joined = (item.content || []).map(c => c.text || '').join('\n');
+            pushMessage('user', joined);
+          } else if (item.type === 'agentMessage') {
+            pushMessage('agent', item.text || '');
+          }
+        }
+        if (turn.status && turn.status !== 'completed') {
+          pushMessage('agent', `[turn ${turn.status}]`);
+        }
+      }
+    }
+
+    async function loadThreads() {
+      setStatus('Loading threads...');
+      const data = await api('/api/threads?limit=50&sourceKinds=vscode');
+      state.threads = data.data || [];
+      if (!state.selectedThreadId && state.threads.length) {
+        state.selectedThreadId = state.threads[0].id;
+      }
+      renderThreads();
+      if (state.selectedThreadId) {
+        await loadThread(state.selectedThreadId);
+      } else {
+        setStatus('No threads found. Create a new thread.');
+      }
+    }
+
+    async function loadThread(threadId) {
+      setStatus('Loading thread...');
+      const data = await api(`/api/threads/${threadId}?includeTurns=true`);
+      renderThreadMessages(data);
+      setStatus(`Thread ${threadId.slice(0,8)} loaded`);
+    }
+
+    async function createThread() {
+      setStatus('Creating thread...');
+      const data = await api('/api/threads/start', {
+        method: 'POST',
+        body: JSON.stringify({ approvalPolicy: 'never' }),
+      });
+      const id = data?.thread?.id;
+      if (!id) throw new Error('thread/start returned no id');
+      state.selectedThreadId = id;
+      await loadThreads();
+      setStatus(`New thread ${id.slice(0,8)} created`);
+    }
+
+    async function resumeThread() {
+      if (!state.selectedThreadId) return;
+      setStatus('Resuming thread...');
+      await api(`/api/threads/${state.selectedThreadId}/resume`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      setStatus('Thread resumed');
+    }
+
+    async function sendMessage() {
+      const text = el.input.value.trim();
+      if (!text) return;
+      if (!state.selectedThreadId) {
+        await createThread();
+      }
+      if (state.busy) return;
+      state.busy = true;
+      el.sendBtn.disabled = true;
+
+      try {
+        pushMessage('user', text);
+        el.input.value = '';
+        setStatus('Sending...');
+
+        const out = await api(`/api/threads/${state.selectedThreadId}/turns`, {
+          method: 'POST',
+          body: JSON.stringify({ text, wait: true }),
+        });
+
+        const read = out.threadRead || out;
+        renderThreadMessages(read);
+        setStatus('Completed');
+        await loadThreads();
+      } catch (err) {
+        setStatus(String(err), true);
+      } finally {
+        state.busy = false;
+        el.sendBtn.disabled = false;
+      }
+    }
+
+    el.refreshBtn.onclick = () => loadThreads().catch(e => setStatus(String(e), true));
+    el.newThreadBtn.onclick = () => createThread().catch(e => setStatus(String(e), true));
+    el.resumeBtn.onclick = () => resumeThread().catch(e => setStatus(String(e), true));
+    el.sendBtn.onclick = () => sendMessage();
+    el.input.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') sendMessage();
+    });
+
+    loadThreads().catch(e => setStatus(String(e), true));
+  </script>
+</body>
+</html>

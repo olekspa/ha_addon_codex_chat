@@ -1,0 +1,30 @@
+name: Codex Chat
+version: 0.1.0
+slug: codex_chat
+description: Chat with Codex relay from Home Assistant (threads, history, resume, turns).
+url: https://github.com/sasha/codex-chat-ha-addon
+arch:
+  - amd64
+  - aarch64
+  - armv7
+startup: application
+boot: auto
+init: false
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:chat-processing
+panel_title: Codex Chat
+ports: {}
+ports_description: {}
+options:
+  relay_url: "http://192.168.1.100:8765"
+  relay_token: ""
+  default_wait: true
+  wait_timeout: 120
+  poll_interval: 1.0
+schema:
+  relay_url: str
+  relay_token: password
+  default_wait: bool
+  wait_timeout: int(10,900)
+  poll_interval: float(0.2,5.0)
