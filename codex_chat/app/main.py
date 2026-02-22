@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -94,6 +96,40 @@ def detail_text(detail: Any) -> str:
         return json.dumps(detail, ensure_ascii=True)
     except Exception:
         return str(detail)
+
+
+def extract_thread(obj: dict[str, Any]) -> dict[str, Any] | None:
+    thread = obj.get("thread")
+    return thread if isinstance(thread, dict) else None
+
+
+def thread_has_agent_message(thread: dict[str, Any]) -> bool:
+    turns = thread.get("turns")
+    if not isinstance(turns, list):
+        return False
+    for turn in turns:
+        if not isinstance(turn, dict):
+            continue
+        items = turn.get("items")
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, dict) and item.get("type") == "agentMessage":
+                return True
+    return False
+
+
+async def poll_until_agent_message(thread_id: str, timeout_s: int, poll_s: float) -> dict[str, Any]:
+    deadline = time.time() + max(3, timeout_s)
+    last_result: dict[str, Any] | None = None
+    while time.time() < deadline:
+        result = await relay_get(f"/threads/{thread_id}", params={"includeTurns": "true"})
+        last_result = result
+        thread = extract_thread(result)
+        if thread and thread_has_agent_message(thread):
+            return result
+        await asyncio.sleep(max(0.2, poll_s))
+    return last_result or await relay_get(f"/threads/{thread_id}", params={"includeTurns": "true"})
 
 
 async def relay_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -253,14 +289,33 @@ async def api_turn_start(thread_id: str, body: TurnBody) -> dict[str, Any]:
         pass
 
     try:
-        return await relay_post(f"/threads/{thread_id}/turns", {"text": body.text}, params=params)
+        result = await relay_post(f"/threads/{thread_id}/turns", {"text": body.text}, params=params)
     except HTTPException as exc:
         # Retry once after resume when relay reports "thread not found".
         text = detail_text(exc.detail)
         if "thread not found" in text:
             await relay_post(f"/threads/{thread_id}/resume", {})
-            return await relay_post(f"/threads/{thread_id}/turns", {"text": body.text}, params=params)
-        raise
+            result = await relay_post(f"/threads/{thread_id}/turns", {"text": body.text}, params=params)
+        else:
+            raise
+
+    # Some relay/app-server flows mark turn completed before agent message is materialized.
+    # Do a short follow-up poll so UI gets the assistant reply without requiring another user action.
+    thread_read = result.get("threadRead")
+    if isinstance(thread_read, dict):
+        thread = extract_thread(thread_read)
+        if thread and not thread_has_agent_message(thread):
+            try:
+                refreshed = await poll_until_agent_message(
+                    thread_id=thread_id,
+                    timeout_s=min(wait_timeout, 20),
+                    poll_s=settings.poll_interval,
+                )
+                result["threadRead"] = refreshed
+            except Exception:
+                # Fallback to original result; frontend can still refresh.
+                pass
+    return result
 
 
 @app.get("/")
