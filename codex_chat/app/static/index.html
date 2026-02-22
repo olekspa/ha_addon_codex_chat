@@ -30,6 +30,9 @@
       height: 100vh;
       padding: 12px;
     }
+    .sidebar {
+      position: relative;
+    }
     .panel {
       background: var(--panel);
       border: 1px solid var(--line);
@@ -47,6 +50,10 @@
     }
     .title { font-weight: 700; letter-spacing: 0.2px; }
     .toolbar { display: flex; gap: 8px; align-items: center; }
+    .chat-header .toolbar {
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
     .toolbar input, .toolbar select {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -95,6 +102,7 @@
       display: grid;
       grid-template-columns: 1fr auto auto;
       gap: 8px;
+      align-items: start;
     }
     textarea {
       width: 100%;
@@ -119,15 +127,96 @@
     button:disabled { opacity: 0.55; cursor: not-allowed; }
     .status { color: var(--muted); font-size: 12px; }
     .error { color: var(--warn); }
+    .mobile-only { display: none; }
+    .drawer-close {
+      display: none;
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 2;
+    }
     @media (max-width: 980px) {
-      .app { grid-template-columns: 1fr; height: auto; min-height: 100vh; }
-      .panel { min-height: 36vh; }
+      body {
+        min-height: 100dvh;
+      }
+      .app {
+        grid-template-columns: 1fr;
+        height: 100dvh;
+        min-height: 100dvh;
+        gap: 8px;
+        padding: 8px;
+      }
+      .panel {
+        min-height: 0;
+      }
+      .chat {
+        min-height: 0;
+      }
+      .chat-header {
+        align-items: flex-start;
+      }
+      .chat-header .toolbar {
+        justify-content: flex-start;
+      }
+      .chat-header .toolbar button,
+      .chat-header .toolbar select,
+      .chat-header .toolbar input {
+        max-width: 100%;
+      }
+      .messages {
+        padding: 10px;
+      }
+      .msg {
+        max-width: 100%;
+      }
+      .composer {
+        grid-template-columns: 1fr 1fr;
+        gap: 6px;
+      }
+      .composer textarea {
+        grid-column: 1 / -1;
+        min-height: 96px;
+      }
+      .composer button {
+        width: 100%;
+      }
+      .mobile-only {
+        display: inline-block;
+      }
+      .sidebar {
+        display: none;
+      }
+      body.thread-menu-open .sidebar {
+        display: block;
+        position: fixed;
+        top: 8px;
+        left: 8px;
+        right: 8px;
+        bottom: 8px;
+        z-index: 30;
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      body.thread-menu-open::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.35);
+        z-index: 20;
+      }
+      body.thread-menu-open .drawer-close {
+        display: inline-block;
+      }
+      .threads {
+        height: calc(100% - 54px);
+      }
     }
   </style>
 </head>
 <body>
   <div class="app">
-    <section class="panel">
+    <section id="sidebarPanel" class="panel sidebar">
+      <button id="closeThreadsBtn" class="secondary drawer-close">Close</button>
       <div class="sidebar-header">
         <div class="title">Threads</div>
         <div class="toolbar">
@@ -145,6 +234,7 @@
           <div id="status" class="status">Loading...</div>
         </div>
         <div class="toolbar">
+          <button id="openThreadsBtn" class="secondary mobile-only">Threads</button>
           <label><input id="autoRefreshToggle" type="checkbox" checked /> Auto</label>
           <select id="autoRefreshInterval">
             <option value="1.5">1.5s</option>
@@ -180,6 +270,9 @@
       status: document.getElementById('status'),
       input: document.getElementById('input'),
       refreshBtn: document.getElementById('refreshBtn'),
+      sidebarPanel: document.getElementById('sidebarPanel'),
+      openThreadsBtn: document.getElementById('openThreadsBtn'),
+      closeThreadsBtn: document.getElementById('closeThreadsBtn'),
       searchInput: document.getElementById('searchInput'),
       newThreadBtn: document.getElementById('newThreadBtn'),
       resumeBtn: document.getElementById('resumeBtn'),
@@ -197,6 +290,19 @@
       assistInputBtn: document.getElementById('assistInputBtn'),
       assistLastBtn: document.getElementById('assistLastBtn'),
     };
+
+    function isMobileLayout() {
+      return window.matchMedia('(max-width: 980px)').matches;
+    }
+
+    function closeThreadMenu() {
+      document.body.classList.remove('thread-menu-open');
+    }
+
+    function openThreadMenu() {
+      if (!isMobileLayout()) return;
+      document.body.classList.add('thread-menu-open');
+    }
 
     const state = {
       threads: [],
@@ -264,6 +370,7 @@
           state.selectedThreadId = t.id;
           renderThreads();
           await loadThread(t.id);
+          closeThreadMenu();
         };
         el.threads.appendChild(div);
       }
@@ -473,6 +580,8 @@
     }
 
     el.refreshBtn.onclick = () => loadThreads().catch(e => setStatus(String(e), true));
+    el.openThreadsBtn.onclick = () => openThreadMenu();
+    el.closeThreadsBtn.onclick = () => closeThreadMenu();
     el.newThreadBtn.onclick = () => createThread().catch(e => setStatus(String(e), true));
     el.resumeBtn.onclick = () => resumeThread().catch(e => setStatus(String(e), true));
     el.searchInput.oninput = () => renderThreads();
@@ -530,6 +639,18 @@
         e.preventDefault();
         sendMessage();
       }
+    });
+    window.addEventListener('resize', () => {
+      if (!isMobileLayout()) closeThreadMenu();
+    });
+    document.addEventListener('click', (e) => {
+      if (!isMobileLayout()) return;
+      if (!document.body.classList.contains('thread-menu-open')) return;
+      if (el.sidebarPanel.contains(e.target) || el.openThreadsBtn.contains(e.target)) return;
+      closeThreadMenu();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeThreadMenu();
     });
 
     function resetAutoRefreshTimer() {
