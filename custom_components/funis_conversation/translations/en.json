@@ -1,0 +1,29 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Funis Conversation Agent",
+        "description": "Connect Home Assistant Assist to Funis via Codex relay.",
+        "data": {
+          "name": "Name",
+          "relay_url": "Relay URL",
+          "relay_token": "Relay token",
+          "wait_timeout": "Wait timeout (seconds)",
+          "wait_poll": "Wait poll interval (seconds)",
+          "cwd": "Default working directory (optional)",
+          "model": "Default model (optional)",
+          "approval_policy": "Approval policy",
+          "sandbox_mode": "Sandbox mode"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to relay",
+      "invalid_relay": "Relay health check failed",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "single_instance_allowed": "Only one Funis Conversation Agent is allowed"
+    }
+  }
+}

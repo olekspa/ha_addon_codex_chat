@@ -13,6 +13,7 @@ Home Assistant add-on that provides a chat UI and backend proxy for a Codex rela
 - Optional Home Assistant TTS for assistant replies (manual + auto-speak).
 - Optional Home Assistant Assist text processing (`conversation.process`) from chat.
 - Optional HA webhook notifications for user push workflows.
+- Compatible with `funis_conversation` custom Assist agent integration (native Assist routing to Funis).
 
 ## Add-on Options
 - `relay_url`: Base URL of your relay service, e.g. `http://192.168.1.50:8765`

@@ -1,0 +1,13 @@
+{
+  "domain": "funis_conversation",
+  "name": "Funis Conversation Agent",
+  "version": "0.1.0",
+  "documentation": "https://github.com/olekspa/ha_addon_codex_chat",
+  "issue_tracker": "https://github.com/olekspa/ha_addon_codex_chat/issues",
+  "config_flow": true,
+  "integration_type": "service",
+  "requirements": [],
+  "codeowners": [
+    "@olekspa"
+  ]
+}
