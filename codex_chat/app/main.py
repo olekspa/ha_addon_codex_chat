@@ -87,6 +87,15 @@ def relay_base_url(settings: Settings) -> str:
     return settings.relay_url.rstrip("/")
 
 
+def detail_text(detail: Any) -> str:
+    if isinstance(detail, str):
+        return detail
+    try:
+        return json.dumps(detail, ensure_ascii=True)
+    except Exception:
+        return str(detail)
+
+
 async def relay_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     settings = load_settings()
     url = f"{relay_base_url(settings)}{path}"
@@ -200,7 +209,18 @@ async def api_threads(
 
 @app.get("/api/threads/{thread_id}")
 async def api_thread_read(thread_id: str, includeTurns: bool = True) -> dict[str, Any]:
-    return await relay_get(f"/threads/{thread_id}", params={"includeTurns": str(includeTurns).lower()})
+    try:
+        return await relay_get(f"/threads/{thread_id}", params={"includeTurns": str(includeTurns).lower()})
+    except HTTPException as exc:
+        # New threads may exist but not yet have materialized turn history.
+        text = detail_text(exc.detail)
+        if includeTurns and "not materialized yet" in text:
+            result = await relay_get(f"/threads/{thread_id}", params={"includeTurns": "false"})
+            thread = result.get("thread")
+            if isinstance(thread, dict):
+                thread["turns"] = []
+            return result
+        raise
 
 
 @app.post("/api/threads/start")
@@ -226,7 +246,21 @@ async def api_turn_start(thread_id: str, body: TurnBody) -> dict[str, Any]:
         "waitTimeout": str(wait_timeout),
         "waitPoll": str(settings.poll_interval),
     }
-    return await relay_post(f"/threads/{thread_id}/turns", {"text": body.text}, params=params)
+    # Best-effort resume to materialize thread state in relay before posting a turn.
+    try:
+        await relay_post(f"/threads/{thread_id}/resume", {})
+    except HTTPException:
+        pass
+
+    try:
+        return await relay_post(f"/threads/{thread_id}/turns", {"text": body.text}, params=params)
+    except HTTPException as exc:
+        # Retry once after resume when relay reports "thread not found".
+        text = detail_text(exc.detail)
+        if "thread not found" in text:
+            await relay_post(f"/threads/{thread_id}/resume", {})
+            return await relay_post(f"/threads/{thread_id}/turns", {"text": body.text}, params=params)
+        raise
 
 
 @app.get("/")
