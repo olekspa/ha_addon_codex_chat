@@ -151,6 +151,11 @@
             <option value="2.5" selected>2.5s</option>
             <option value="5">5s</option>
           </select>
+          <label><input id="ttsAutoToggle" type="checkbox" /> TTS</label>
+          <button id="speakLastBtn" class="secondary">Speak Last</button>
+          <label><input id="assistAutoToggle" type="checkbox" /> Assist</label>
+          <button id="assistInputBtn" class="secondary">Assist Input</button>
+          <button id="assistLastBtn" class="secondary">Assist Last</button>
           <button id="pinBtn" class="secondary">Pin</button>
           <button id="archiveBtn" class="secondary">Archive</button>
           <button id="unarchiveBtn" class="secondary">Unarchive</button>
@@ -186,6 +191,11 @@
       materializeBtn: document.getElementById('materializeBtn'),
       autoRefreshToggle: document.getElementById('autoRefreshToggle'),
       autoRefreshInterval: document.getElementById('autoRefreshInterval'),
+      ttsAutoToggle: document.getElementById('ttsAutoToggle'),
+      speakLastBtn: document.getElementById('speakLastBtn'),
+      assistAutoToggle: document.getElementById('assistAutoToggle'),
+      assistInputBtn: document.getElementById('assistInputBtn'),
+      assistLastBtn: document.getElementById('assistLastBtn'),
     };
 
     const state = {
@@ -196,6 +206,17 @@
       lastThreadUpdatedAt: 0,
       pinnedThreadIds: new Set(JSON.parse(localStorage.getItem('codexPinnedThreads') || '[]')),
       lastFailedMessage: null,
+      tts: {
+        enabled: false,
+        service: 'tts.speak',
+        entity_id: '',
+        media_player_entity_id: '',
+      },
+      assist: {
+        enabled: false,
+        agent_id: '',
+        language: '',
+      },
     };
 
     function setStatus(text, isError = false) {
@@ -274,6 +295,76 @@
       }
     }
 
+    function extractLastAgentText(threadData) {
+      const turns = threadData?.thread?.turns || [];
+      for (let i = turns.length - 1; i >= 0; i--) {
+        const turn = turns[i];
+        const items = turn?.items || [];
+        for (let j = items.length - 1; j >= 0; j--) {
+          const item = items[j];
+          if (item?.type === 'agentMessage' && item?.text) return String(item.text);
+        }
+      }
+      return '';
+    }
+
+    async function speakText(message) {
+      const text = (message || '').trim();
+      if (!text) return;
+      await api('./api/ha/tts', {
+        method: 'POST',
+        body: JSON.stringify({
+          message: text,
+          service: state.tts.service || undefined,
+          entity_id: state.tts.entity_id || undefined,
+          media_player_entity_id: state.tts.media_player_entity_id || undefined,
+        }),
+      });
+    }
+
+    async function loadTtsConfig() {
+      try {
+        const cfg = await api('./api/ha/tts/config');
+        state.tts = {
+          enabled: !!cfg.enabled,
+          service: cfg.service || 'tts.speak',
+          entity_id: cfg.entity_id || '',
+          media_player_entity_id: cfg.media_player_entity_id || '',
+        };
+        el.ttsAutoToggle.checked = state.tts.enabled;
+      } catch (_err) {
+        // Ignore when unavailable; chat can still function without TTS.
+      }
+    }
+
+    async function askAssist(text) {
+      const message = (text || '').trim();
+      if (!message) return '';
+      const out = await api('./api/ha/assist/process', {
+        method: 'POST',
+        body: JSON.stringify({
+          text: message,
+          agent_id: state.assist.agent_id || undefined,
+          language: state.assist.language || undefined,
+        }),
+      });
+      return (out.response_text || '').trim();
+    }
+
+    async function loadAssistConfig() {
+      try {
+        const cfg = await api('./api/ha/assist/config');
+        state.assist = {
+          enabled: !!cfg.enabled,
+          agent_id: cfg.agent_id || '',
+          language: cfg.language || '',
+        };
+        el.assistAutoToggle.checked = state.assist.enabled;
+      } catch (_err) {
+        // Ignore when unavailable; chat can still function without Assist.
+      }
+    }
+
     async function loadThreads() {
       setStatus('Loading threads...');
       const data = await api('./api/threads?limit=50&sourceKinds=vscode');
@@ -345,6 +436,27 @@
 
         const read = out.threadRead || out;
         renderThreadMessages(read);
+        if (el.ttsAutoToggle.checked) {
+          const lastAgent = extractLastAgentText(read);
+          if (lastAgent) {
+            try {
+              await speakText(lastAgent);
+            } catch (ttsErr) {
+              setStatus(`TTS error: ${String(ttsErr)}`, true);
+            }
+          }
+        }
+        if (el.assistAutoToggle.checked) {
+          const lastAgent = extractLastAgentText(read);
+          if (lastAgent) {
+            try {
+              const assistReply = await askAssist(lastAgent);
+              if (assistReply) pushMessage('agent', `[Assist] ${assistReply}`);
+            } catch (assistErr) {
+              setStatus(`Assist error: ${String(assistErr)}`, true);
+            }
+          }
+        }
         setStatus('Completed');
         await loadThreads();
         state.lastFailedMessage = null;
@@ -437,9 +549,61 @@
     }
     el.autoRefreshToggle.onchange = () => resetAutoRefreshTimer();
     el.autoRefreshInterval.onchange = () => resetAutoRefreshTimer();
+    el.ttsAutoToggle.onchange = () => {
+      state.tts.enabled = el.ttsAutoToggle.checked;
+    };
+    el.assistAutoToggle.onchange = () => {
+      state.assist.enabled = el.assistAutoToggle.checked;
+    };
+    el.speakLastBtn.onclick = async () => {
+      try {
+        if (!state.selectedThreadId) return;
+        const data = await api(`./api/threads/${state.selectedThreadId}?includeTurns=true`);
+        const text = extractLastAgentText(data);
+        if (!text) {
+          setStatus('No assistant reply to speak');
+          return;
+        }
+        await speakText(text);
+        setStatus('Spoken via HA TTS');
+      } catch (e) {
+        setStatus(String(e), true);
+      }
+    };
+    el.assistInputBtn.onclick = async () => {
+      try {
+        const text = el.input.value.trim();
+        if (!text) {
+          setStatus('Input is empty');
+          return;
+        }
+        const reply = await askAssist(text);
+        if (reply) pushMessage('agent', `[Assist] ${reply}`);
+        setStatus('Assist processed input');
+      } catch (e) {
+        setStatus(String(e), true);
+      }
+    };
+    el.assistLastBtn.onclick = async () => {
+      try {
+        if (!state.selectedThreadId) return;
+        const data = await api(`./api/threads/${state.selectedThreadId}?includeTurns=true`);
+        const text = extractLastAgentText(data);
+        if (!text) {
+          setStatus('No assistant reply to send to Assist');
+          return;
+        }
+        const reply = await askAssist(text);
+        if (reply) pushMessage('agent', `[Assist] ${reply}`);
+        setStatus('Assist processed last reply');
+      } catch (e) {
+        setStatus(String(e), true);
+      }
+    };
     resetAutoRefreshTimer();
-
-    loadThreads().catch(e => setStatus(String(e), true));
+    Promise.all([loadTtsConfig(), loadAssistConfig()]).finally(() => {
+      loadThreads().catch(e => setStatus(String(e), true));
+    });
   </script>
 </body>
 </html>

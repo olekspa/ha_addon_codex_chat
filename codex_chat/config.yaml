@@ -1,5 +1,5 @@
 name: Codex Chat
-version: 0.2.0
+version: 0.2.3
 slug: codex_chat
 description: Chat with Codex relay from Home Assistant (threads, history, resume, turns).
 url: https://github.com/olekspa/ha_addon_codex_chat
@@ -23,9 +23,25 @@ options:
   default_wait: true
   wait_timeout: 120
   poll_interval: 1.0
+  tts_enabled: false
+  tts_service: "tts.speak"
+  tts_entity_id: ""
+  tts_media_player_entity_id: ""
+  assist_enabled: false
+  assist_agent_id: ""
+  assist_language: ""
+  notify_webhook_id: "velox_funis_webhook"
 schema:
   relay_url: str
   relay_token: password
   default_wait: bool
   wait_timeout: int(10,900)
   poll_interval: float(0.2,5.0)
+  tts_enabled: bool
+  tts_service: str
+  tts_entity_id: str
+  tts_media_player_entity_id: str
+  assist_enabled: bool
+  assist_agent_id: str
+  assist_language: str
+  notify_webhook_id: str

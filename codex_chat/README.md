@@ -10,6 +10,9 @@ Home Assistant add-on that provides a chat UI and backend proxy for a Codex rela
 - Thread UX: search, pinning, archive/unarchive, explicit materialize action.
 - Message UX: Enter-to-send, retry failed send, pending/failed states.
 - Performance: short thread-list cache and delta-based polling support.
+- Optional Home Assistant TTS for assistant replies (manual + auto-speak).
+- Optional Home Assistant Assist text processing (`conversation.process`) from chat.
+- Optional HA webhook notifications for user push workflows.
 
 ## Add-on Options
 - `relay_url`: Base URL of your relay service, e.g. `http://192.168.1.50:8765`
@@ -17,6 +20,43 @@ Home Assistant add-on that provides a chat UI and backend proxy for a Codex rela
 - `default_wait`: Wait for turn completion before returning response
 - `wait_timeout`: Max wait seconds for turn completion
 - `poll_interval`: Poll interval when waiting for turn completion
+- `tts_enabled`: Enable auto-speak for assistant replies
+- `tts_service`: HA service to call, e.g. `tts.speak`
+- `tts_entity_id`: Optional TTS entity (for provider selection, e.g. Cloud TTS entity)
+- `tts_media_player_entity_id`: Target media player entity used for playback
+- `assist_enabled`: Enable auto-send of Codex replies to Assist
+- `assist_agent_id`: Optional Assist agent id override
+- `assist_language`: Optional language override for Assist processing
+- `notify_webhook_id`: Webhook id used by `/api/ha/notify` (default: `velox_funis_webhook`)
+
+When `tts_service` is `tts.speak`, set `tts_media_player_entity_id`.
+If your Home Assistant Cloud TTS provider is configured in HA, this add-on will use it via the normal HA service call path.
+Assist integration uses Home Assistant `conversation.process` service through the Supervisor Core API.
+
+## Webhook notifications
+Use add-on endpoint:
+- `POST /api/ha/notify`
+
+Request body:
+```json
+{
+  "title": "Funis",
+  "message": "Build completed",
+  "level": "info"
+}
+```
+
+The add-on posts this payload to:
+- `/api/webhook/<notify_webhook_id>` in Home Assistant Core.
+
+For your setup:
+- `notify_webhook_id = velox_funis_webhook`
+- Status: validated on 2026-02-22 (HTTP 200 and user-confirmed push delivery)
+
+Recommended HA automation for that webhook:
+- Trigger: Webhook (`velox_funis_webhook`, POST)
+- Action 1: `notify.mobile_app_<your_phone>`
+- Action 2 (optional fallback): `persistent_notification.create`
 
 ## Relay Requirements
 Relay should run on LAN host:

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 import threading
 from pathlib import Path
@@ -31,6 +32,14 @@ class Settings(BaseModel):
     default_wait: bool = True
     wait_timeout: int = 120
     poll_interval: float = 1.0
+    tts_enabled: bool = False
+    tts_service: str = "tts.speak"
+    tts_entity_id: str = ""
+    tts_media_player_entity_id: str = ""
+    assist_enabled: bool = False
+    assist_agent_id: str = ""
+    assist_language: str = ""
+    notify_webhook_id: str = "velox_funis_webhook"
 
 
 def load_settings() -> Settings:
@@ -52,7 +61,7 @@ def load_settings() -> Settings:
     )
 
 
-app = FastAPI(title="Codex Chat Add-on", version="0.2.0")
+app = FastAPI(title="Codex Chat Add-on", version="0.2.2")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -86,6 +95,31 @@ class ThreadArchiveBody(BaseModel):
     archived: bool = True
 
 
+class HaTtsBody(BaseModel):
+    message: str
+    service: str | None = None
+    entity_id: str | None = None
+    media_player_entity_id: str | None = None
+    language: str | None = None
+    cache: bool | None = None
+    options: dict[str, Any] | None = None
+
+
+class HaAssistBody(BaseModel):
+    text: str
+    agent_id: str | None = None
+    language: str | None = None
+    conversation_id: str | None = None
+
+
+class HaNotifyBody(BaseModel):
+    message: str
+    title: str | None = "Funis"
+    level: str | None = "info"
+    webhook_id: str | None = None
+    data: dict[str, Any] | None = None
+
+
 def relay_headers(settings: Settings) -> dict[str, str]:
     headers = {"Content-Type": "application/json"}
     if settings.relay_token:
@@ -104,6 +138,81 @@ def detail_text(detail: Any) -> str:
         return json.dumps(detail, ensure_ascii=True)
     except Exception:
         return str(detail)
+
+
+def parse_service(service: str) -> tuple[str, str]:
+    value = (service or "").strip()
+    if not re.fullmatch(r"[a-z0-9_]+\.[a-z0-9_]+", value):
+        raise HTTPException(status_code=400, detail="Invalid service format; expected '<domain>.<service>'")
+    return tuple(value.split(".", 1))  # type: ignore[return-value]
+
+
+def supervisor_headers() -> dict[str, str]:
+    token = os.getenv("SUPERVISOR_TOKEN", "").strip()
+    if not token:
+        raise HTTPException(status_code=500, detail="SUPERVISOR_TOKEN not available in add-on runtime")
+    return {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+
+async def ha_service_call(service: str, payload: dict[str, Any]) -> Any:
+    domain, name = parse_service(service)
+    url = f"http://supervisor/core/api/services/{domain}/{name}"
+    settings = load_settings()
+    async with httpx.AsyncClient(timeout=max(15, settings.wait_timeout)) as client:
+        try:
+            resp = await client.post(url, headers=supervisor_headers(), json=payload)
+        except Exception as exc:
+            LOG.exception("HA service call failed service=%s error=%s", service, type(exc).__name__)
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "Home Assistant service unreachable",
+                    "service": service,
+                    "exception": type(exc).__name__,
+                    "message": str(exc),
+                },
+            ) from exc
+
+    if resp.status_code >= 400:
+        LOG.warning("HA service call non-2xx service=%s status=%s body=%s", service, resp.status_code, resp.text[:400])
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    try:
+        return resp.json()
+    except Exception:
+        return {"ok": True}
+
+
+async def ha_webhook_call(webhook_id: str, payload: dict[str, Any]) -> Any:
+    cleaned = (webhook_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{6,128}", cleaned):
+        raise HTTPException(status_code=400, detail="Invalid webhook_id format")
+    url = f"http://supervisor/core/api/webhook/{cleaned}"
+    settings = load_settings()
+    async with httpx.AsyncClient(timeout=max(10, settings.wait_timeout)) as client:
+        try:
+            resp = await client.post(url, headers=supervisor_headers(), json=payload)
+        except Exception as exc:
+            LOG.exception("HA webhook call failed webhook_id=%s error=%s", cleaned, type(exc).__name__)
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "Home Assistant webhook unreachable",
+                    "webhook_id": cleaned,
+                    "exception": type(exc).__name__,
+                    "message": str(exc),
+                },
+            ) from exc
+
+    if resp.status_code >= 400:
+        LOG.warning("HA webhook call non-2xx webhook_id=%s status=%s body=%s", cleaned, resp.status_code, resp.text[:400])
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    try:
+        return resp.json()
+    except Exception:
+        return {"ok": True}
 
 
 def extract_thread(obj: dict[str, Any]) -> dict[str, Any] | None:
@@ -229,9 +338,126 @@ async def api_diagnostics() -> dict[str, Any]:
         "relay_token_present": token_present,
         "wait_timeout": settings.wait_timeout,
         "poll_interval": settings.poll_interval,
+        "tts_enabled": settings.tts_enabled,
+        "tts_service": settings.tts_service,
+        "tts_entity_id": settings.tts_entity_id,
+        "tts_media_player_entity_id": settings.tts_media_player_entity_id,
+        "assist_enabled": settings.assist_enabled,
+        "assist_agent_id": settings.assist_agent_id,
+        "assist_language": settings.assist_language,
+        "notify_webhook_id": settings.notify_webhook_id,
         "relay_health": relay,
         "relay_error": relay_error,
     }
+
+
+@app.get("/api/ha/tts/config")
+async def api_ha_tts_config() -> dict[str, Any]:
+    settings = load_settings()
+    return {
+        "enabled": settings.tts_enabled,
+        "service": settings.tts_service,
+        "entity_id": settings.tts_entity_id,
+        "media_player_entity_id": settings.tts_media_player_entity_id,
+    }
+
+
+@app.post("/api/ha/tts")
+async def api_ha_tts(body: HaTtsBody) -> dict[str, Any]:
+    settings = load_settings()
+    message = (body.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+
+    service = (body.service or settings.tts_service).strip() or "tts.speak"
+    entity_id = (body.entity_id or settings.tts_entity_id).strip()
+    media_player_entity_id = (body.media_player_entity_id or settings.tts_media_player_entity_id).strip()
+    if service == "tts.speak" and not media_player_entity_id:
+        raise HTTPException(status_code=400, detail="media_player_entity_id is required when service is tts.speak")
+
+    payload: dict[str, Any] = {"message": message}
+    if entity_id:
+        payload["entity_id"] = entity_id
+    if media_player_entity_id:
+        payload["media_player_entity_id"] = media_player_entity_id
+    if body.language:
+        payload["language"] = body.language
+    if body.cache is not None:
+        payload["cache"] = body.cache
+    if body.options is not None:
+        payload["options"] = body.options
+
+    result = await ha_service_call(service, payload)
+    return {"ok": True, "service": service, "result": result}
+
+
+@app.get("/api/ha/assist/config")
+async def api_ha_assist_config() -> dict[str, Any]:
+    settings = load_settings()
+    return {
+        "enabled": settings.assist_enabled,
+        "agent_id": settings.assist_agent_id,
+        "language": settings.assist_language,
+    }
+
+
+@app.post("/api/ha/assist/process")
+async def api_ha_assist_process(body: HaAssistBody) -> dict[str, Any]:
+    settings = load_settings()
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+
+    payload: dict[str, Any] = {"text": text}
+    agent_id = (body.agent_id or settings.assist_agent_id).strip()
+    language = (body.language or settings.assist_language).strip()
+    if agent_id:
+        payload["agent_id"] = agent_id
+    if language:
+        payload["language"] = language
+    if body.conversation_id:
+        payload["conversation_id"] = body.conversation_id
+
+    result = await ha_service_call("conversation.process", payload)
+    response_text = ""
+    if isinstance(result, list) and result and isinstance(result[0], dict):
+        resp = result[0]
+        response_obj = resp.get("response")
+        if isinstance(response_obj, dict):
+            speech = response_obj.get("speech")
+            if isinstance(speech, dict):
+                plain = speech.get("plain")
+                if isinstance(plain, dict):
+                    response_text = str(plain.get("speech", "") or "")
+    return {"ok": True, "result": result, "response_text": response_text}
+
+
+@app.get("/api/ha/notify/config")
+async def api_ha_notify_config() -> dict[str, Any]:
+    settings = load_settings()
+    return {
+        "webhook_id": settings.notify_webhook_id,
+    }
+
+
+@app.post("/api/ha/notify")
+async def api_ha_notify(body: HaNotifyBody) -> dict[str, Any]:
+    settings = load_settings()
+    message = (body.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+    webhook_id = (body.webhook_id or settings.notify_webhook_id).strip()
+    if not webhook_id:
+        raise HTTPException(status_code=400, detail="webhook_id is required")
+    payload: dict[str, Any] = {
+        "title": (body.title or "Funis").strip() or "Funis",
+        "message": message,
+        "level": (body.level or "info").strip() or "info",
+    }
+    if body.data is not None:
+        payload["data"] = body.data
+    result = await ha_webhook_call(webhook_id, payload)
+    return {"ok": True, "webhook_id": webhook_id, "result": result}
 
 
 @app.get("/api/threads")
