@@ -348,6 +348,35 @@
       document.body.classList.remove('thread-menu-open');
     }
 
+    const forbiddenActionLabels = new Set([
+      'speak last',
+      'assist input',
+      'assist last',
+      'pin',
+      'archive',
+      'unarchive',
+      'materialize',
+    ]);
+    const forbiddenActionIds = new Set([
+      'speaklastbtn',
+      'assistinputbtn',
+      'assistlastbtn',
+      'pinbtn',
+      'archivebtn',
+      'unarchivebtn',
+      'materializebtn',
+    ]);
+
+    function purgeForbiddenButtons() {
+      document.querySelectorAll('button').forEach((btn) => {
+        const id = (btn.id || '').trim().toLowerCase();
+        const label = (btn.textContent || '').trim().toLowerCase();
+        if (forbiddenActionIds.has(id) || forbiddenActionLabels.has(label)) {
+          btn.remove();
+        }
+      });
+    }
+
     function closeMobileActions() {
       document.body.classList.remove('mobile-actions-open');
     }
@@ -656,6 +685,8 @@
     el.ttsAutoToggle.onchange = () => {
       state.tts.enabled = el.ttsAutoToggle.checked;
     };
+    purgeForbiddenButtons();
+    new MutationObserver(() => purgeForbiddenButtons()).observe(document.body, { childList: true, subtree: true });
     resetAutoRefreshTimer();
     Promise.all([loadTtsConfig()]).finally(() => {
       loadThreads().catch(e => setStatus(String(e), true));

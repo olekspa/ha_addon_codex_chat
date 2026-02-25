@@ -64,7 +64,7 @@ def load_settings() -> Settings:
     )
 
 
-app = FastAPI(title="Codex Chat Add-on", version="0.2.8")
+app = FastAPI(title="Codex Chat Add-on", version="0.2.9")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
