@@ -48,7 +48,10 @@
       align-items: center;
       gap: 8px;
     }
-    .title { font-weight: 700; letter-spacing: 0.2px; }
+    .chat-header {
+      padding: 8px 10px;
+    }
+    .title { font-weight: 700; letter-spacing: 0.2px; font-size: 15px; }
     .toolbar { display: flex; gap: 8px; align-items: center; }
     .header-actions {
       display: flex;
@@ -61,6 +64,13 @@
       flex-wrap: wrap;
       justify-content: flex-end;
     }
+    .chat-header .toolbar button,
+    .chat-header .toolbar select,
+    .chat-header .toolbar input {
+      padding-top: 5px;
+      padding-bottom: 5px;
+      font-size: 12px;
+    }
     .toolbar input, .toolbar select {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -69,7 +79,20 @@
       background: #fff;
       color: var(--ink);
     }
-    .threads { overflow: auto; height: calc(100% - 54px); }
+    .threads { overflow: auto; height: calc(100% - 106px); }
+    .thread-actions {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      background: #f8fafc;
+    }
+    .thread-actions button {
+      padding: 7px 9px;
+      font-size: 12px;
+      border-radius: 8px;
+    }
     .thread {
       padding: 11px 12px;
       border-bottom: 1px solid #eceef1;
@@ -132,7 +155,7 @@
     button {
       border: 0;
       border-radius: 10px;
-      padding: 10px 12px;
+      padding: 8px 10px;
       font-weight: 600;
       cursor: pointer;
       background: var(--accent);
@@ -172,6 +195,7 @@
       }
       .chat-header {
         align-items: flex-start;
+        padding: 8px;
       }
       .chat-header .toolbar {
         justify-content: flex-start;
@@ -182,11 +206,11 @@
       body.mobile-actions-open .header-actions {
         display: flex;
         position: fixed;
-        top: 64px;
+        top: 56px;
         left: 8px;
         right: 8px;
         z-index: 26;
-        padding: 10px;
+        padding: 8px;
         border: 1px solid var(--line);
         border-radius: 12px;
         background: var(--panel);
@@ -242,7 +266,7 @@
         display: inline-block;
       }
       .threads {
-        height: calc(100% - 54px);
+        height: calc(100% - 106px);
       }
     }
   </style>
@@ -257,6 +281,13 @@
           <input id="searchInput" placeholder="Search" />
           <button id="refreshBtn" class="secondary">Refresh</button>
         </div>
+      </div>
+      <div class="thread-actions">
+        <button id="newThreadBtn" class="secondary">New Thread</button>
+        <button id="pinBtn" class="secondary">Pin</button>
+        <button id="archiveBtn" class="secondary">Archive</button>
+        <button id="unarchiveBtn" class="secondary">Unarchive</button>
+        <button id="materializeBtn" class="secondary">Materialize</button>
       </div>
       <div id="threads" class="threads"></div>
     </section>
@@ -278,12 +309,6 @@
               <option value="5">5s</option>
             </select>
             <label><input id="ttsAutoToggle" type="checkbox" /> TTS</label>
-            <button id="speakLastBtn" class="secondary">Speak Last</button>
-            <button id="pinBtn" class="secondary">Pin</button>
-            <button id="archiveBtn" class="secondary">Archive</button>
-            <button id="unarchiveBtn" class="secondary">Unarchive</button>
-            <button id="materializeBtn" class="secondary">Materialize</button>
-            <button id="newThreadBtn" class="secondary">New Thread</button>
           </div>
         </div>
       </div>
@@ -321,7 +346,6 @@
       autoRefreshToggle: document.getElementById('autoRefreshToggle'),
       autoRefreshInterval: document.getElementById('autoRefreshInterval'),
       ttsAutoToggle: document.getElementById('ttsAutoToggle'),
-      speakLastBtn: document.getElementById('speakLastBtn'),
     };
 
     function isMobileLayout() {
@@ -689,21 +713,6 @@
     el.autoRefreshInterval.onchange = () => resetAutoRefreshTimer();
     el.ttsAutoToggle.onchange = () => {
       state.tts.enabled = el.ttsAutoToggle.checked;
-    };
-    el.speakLastBtn.onclick = async () => {
-      try {
-        if (!state.selectedThreadId) return;
-        const data = await api(`./api/threads/${state.selectedThreadId}?includeTurns=true`);
-        const text = extractLastAgentText(data);
-        if (!text) {
-          setStatus('No assistant reply to speak');
-          return;
-        }
-        await speakText(text);
-        setStatus('Spoken via HA TTS');
-      } catch (e) {
-        setStatus(String(e), true);
-      }
     };
     resetAutoRefreshTimer();
     Promise.all([loadTtsConfig()]).finally(() => {
