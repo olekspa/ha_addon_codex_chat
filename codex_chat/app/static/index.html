@@ -18,7 +18,7 @@
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      font-family: "Manrope", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       background: radial-gradient(circle at 10% 0%, #fff8e1 0%, var(--bg) 48%), var(--bg);
       color: var(--ink);
       min-height: 100vh;
@@ -36,8 +36,8 @@
     .panel {
       background: var(--panel);
       border: 1px solid var(--line);
-      border-radius: 12px;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.04);
+      border-radius: 14px;
+      box-shadow: 0 6px 20px rgba(15, 23, 42, 0.07);
       overflow: hidden;
     }
     .sidebar-header, .chat-header {
@@ -71,9 +71,10 @@
     }
     .threads { overflow: auto; height: calc(100% - 54px); }
     .thread {
-      padding: 10px 12px;
+      padding: 11px 12px;
       border-bottom: 1px solid #eceef1;
       cursor: pointer;
+      transition: background 140ms ease;
     }
     .thread:hover { background: #f8fafc; }
     .thread.active { background: #ecfeff; border-left: 3px solid var(--accent); padding-left: 9px; }
@@ -90,14 +91,16 @@
       display: flex;
       flex-direction: column;
       gap: 10px;
+      background: linear-gradient(180deg, #f8fafc 0%, #ffffff 220px);
     }
     .msg {
       max-width: 860px;
-      padding: 10px 12px;
-      border-radius: 10px;
+      padding: 11px 13px;
+      border-radius: 12px;
       border: 1px solid var(--line);
       line-height: 1.35;
       white-space: pre-wrap;
+      box-shadow: 0 2px 7px rgba(15, 23, 42, 0.05);
     }
     .msg.user { background: #f0fdfa; border-color: #99f6e4; align-self: flex-end; }
     .msg.agent { background: #f8fafc; align-self: flex-start; }
@@ -116,20 +119,28 @@
       min-height: 72px;
       resize: vertical;
       border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 8px;
+      border-radius: 10px;
+      padding: 10px;
       font: inherit;
       color: var(--ink);
     }
+    textarea:focus {
+      outline: 2px solid #99f6e4;
+      outline-offset: 1px;
+      border-color: #5eead4;
+    }
     button {
       border: 0;
-      border-radius: 8px;
+      border-radius: 10px;
       padding: 10px 12px;
       font-weight: 600;
       cursor: pointer;
       background: var(--accent);
       color: #fff;
+      transition: filter 120ms ease, transform 120ms ease;
     }
+    button:hover { filter: brightness(1.06); }
+    button:active { transform: translateY(1px); }
     button.secondary { background: #334155; }
     button:disabled { opacity: 0.55; cursor: not-allowed; }
     .status { color: var(--muted); font-size: 12px; }
@@ -268,9 +279,6 @@
             </select>
             <label><input id="ttsAutoToggle" type="checkbox" /> TTS</label>
             <button id="speakLastBtn" class="secondary">Speak Last</button>
-            <label><input id="assistAutoToggle" type="checkbox" /> Assist</label>
-            <button id="assistInputBtn" class="secondary">Assist Input</button>
-            <button id="assistLastBtn" class="secondary">Assist Last</button>
             <button id="pinBtn" class="secondary">Pin</button>
             <button id="archiveBtn" class="secondary">Archive</button>
             <button id="unarchiveBtn" class="secondary">Unarchive</button>
@@ -314,9 +322,6 @@
       autoRefreshInterval: document.getElementById('autoRefreshInterval'),
       ttsAutoToggle: document.getElementById('ttsAutoToggle'),
       speakLastBtn: document.getElementById('speakLastBtn'),
-      assistAutoToggle: document.getElementById('assistAutoToggle'),
-      assistInputBtn: document.getElementById('assistInputBtn'),
-      assistLastBtn: document.getElementById('assistLastBtn'),
     };
 
     function isMobileLayout() {
@@ -355,11 +360,6 @@
         service: 'tts.speak',
         entity_id: '',
         media_player_entity_id: '',
-      },
-      assist: {
-        enabled: false,
-        agent_id: '',
-        language: '',
       },
     };
 
@@ -482,34 +482,6 @@
       }
     }
 
-    async function askAssist(text) {
-      const message = (text || '').trim();
-      if (!message) return '';
-      const out = await api('./api/ha/assist/process', {
-        method: 'POST',
-        body: JSON.stringify({
-          text: message,
-          agent_id: state.assist.agent_id || undefined,
-          language: state.assist.language || undefined,
-        }),
-      });
-      return (out.response_text || '').trim();
-    }
-
-    async function loadAssistConfig() {
-      try {
-        const cfg = await api('./api/ha/assist/config');
-        state.assist = {
-          enabled: !!cfg.enabled,
-          agent_id: cfg.agent_id || '',
-          language: cfg.language || '',
-        };
-        el.assistAutoToggle.checked = state.assist.enabled;
-      } catch (_err) {
-        // Ignore when unavailable; chat can still function without Assist.
-      }
-    }
-
     async function loadThreads() {
       setStatus('Loading threads...');
       const data = await api('./api/threads?limit=50&sourceKinds=vscode');
@@ -588,17 +560,6 @@
               await speakText(lastAgent);
             } catch (ttsErr) {
               setStatus(`TTS error: ${String(ttsErr)}`, true);
-            }
-          }
-        }
-        if (el.assistAutoToggle.checked) {
-          const lastAgent = extractLastAgentText(read);
-          if (lastAgent) {
-            try {
-              const assistReply = await askAssist(lastAgent);
-              if (assistReply) pushMessage('agent', `[Assist] ${assistReply}`);
-            } catch (assistErr) {
-              setStatus(`Assist error: ${String(assistErr)}`, true);
             }
           }
         }
@@ -729,9 +690,6 @@
     el.ttsAutoToggle.onchange = () => {
       state.tts.enabled = el.ttsAutoToggle.checked;
     };
-    el.assistAutoToggle.onchange = () => {
-      state.assist.enabled = el.assistAutoToggle.checked;
-    };
     el.speakLastBtn.onclick = async () => {
       try {
         if (!state.selectedThreadId) return;
@@ -747,38 +705,8 @@
         setStatus(String(e), true);
       }
     };
-    el.assistInputBtn.onclick = async () => {
-      try {
-        const text = el.input.value.trim();
-        if (!text) {
-          setStatus('Input is empty');
-          return;
-        }
-        const reply = await askAssist(text);
-        if (reply) pushMessage('agent', `[Assist] ${reply}`);
-        setStatus('Assist processed input');
-      } catch (e) {
-        setStatus(String(e), true);
-      }
-    };
-    el.assistLastBtn.onclick = async () => {
-      try {
-        if (!state.selectedThreadId) return;
-        const data = await api(`./api/threads/${state.selectedThreadId}?includeTurns=true`);
-        const text = extractLastAgentText(data);
-        if (!text) {
-          setStatus('No assistant reply to send to Assist');
-          return;
-        }
-        const reply = await askAssist(text);
-        if (reply) pushMessage('agent', `[Assist] ${reply}`);
-        setStatus('Assist processed last reply');
-      } catch (e) {
-        setStatus(String(e), true);
-      }
-    };
     resetAutoRefreshTimer();
-    Promise.all([loadTtsConfig(), loadAssistConfig()]).finally(() => {
+    Promise.all([loadTtsConfig()]).finally(() => {
       loadThreads().catch(e => setStatus(String(e), true));
     });
   </script>
