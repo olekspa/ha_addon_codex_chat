@@ -7,7 +7,7 @@ Home Assistant add-on that provides a chat UI and backend proxy for a Codex rela
 - Start new threads and resume existing threads.
 - Send chat turns and wait for completion.
 - Keeps relay token server-side (not exposed to browser JS).
-- Thread UX: search, pinning, archive/unarchive, explicit materialize action.
+- Thread UX: search and quick new-thread creation.
 - Message UX: Enter-to-send, retry failed send, pending/failed states.
 - Performance: short thread-list cache and delta-based polling support.
 - Optional Home Assistant TTS for assistant replies (manual + auto-speak).
@@ -82,7 +82,7 @@ python3 relay/codex_relay.py --host 0.0.0.0 --port 8765
 The add-on uses:
 - `image: ghcr.io/olekspa/{arch}-codex_chat`
 
-So version `0.2.7` must exist as image tags:
-- `ghcr.io/olekspa/amd64-codex_chat:0.2.7`
-- `ghcr.io/olekspa/aarch64-codex_chat:0.2.7`
-- `ghcr.io/olekspa/armv7-codex_chat:0.2.7`
+So version `0.2.8` must exist as image tags:
+- `ghcr.io/olekspa/amd64-codex_chat:0.2.8`
+- `ghcr.io/olekspa/aarch64-codex_chat:0.2.8`
+- `ghcr.io/olekspa/armv7-codex_chat:0.2.8`

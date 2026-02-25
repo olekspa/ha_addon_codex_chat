@@ -64,7 +64,7 @@ def load_settings() -> Settings:
     )
 
 
-app = FastAPI(title="Codex Chat Add-on", version="0.2.2")
+app = FastAPI(title="Codex Chat Add-on", version="0.2.8")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -648,7 +648,14 @@ async def api_turn_start(thread_id: str, body: TurnBody) -> dict[str, Any]:
 
 @app.get("/")
 async def index() -> FileResponse:
-    return FileResponse(str(STATIC_DIR / "index.html"))
+    return FileResponse(
+        str(STATIC_DIR / "index.html"),
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.on_event("startup")

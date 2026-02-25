@@ -284,10 +284,6 @@
       </div>
       <div class="thread-actions">
         <button id="newThreadBtn" class="secondary">New Thread</button>
-        <button id="pinBtn" class="secondary">Pin</button>
-        <button id="archiveBtn" class="secondary">Archive</button>
-        <button id="unarchiveBtn" class="secondary">Unarchive</button>
-        <button id="materializeBtn" class="secondary">Materialize</button>
       </div>
       <div id="threads" class="threads"></div>
     </section>
@@ -339,10 +335,6 @@
       resumeBtn: document.getElementById('resumeBtn'),
       sendBtn: document.getElementById('sendBtn'),
       retryBtn: document.getElementById('retryBtn'),
-      pinBtn: document.getElementById('pinBtn'),
-      archiveBtn: document.getElementById('archiveBtn'),
-      unarchiveBtn: document.getElementById('unarchiveBtn'),
-      materializeBtn: document.getElementById('materializeBtn'),
       autoRefreshToggle: document.getElementById('autoRefreshToggle'),
       autoRefreshInterval: document.getElementById('autoRefreshInterval'),
       ttsAutoToggle: document.getElementById('ttsAutoToggle'),
@@ -377,7 +369,6 @@
       busy: false,
       autoRefreshTimer: null,
       lastThreadUpdatedAt: 0,
-      pinnedThreadIds: new Set(JSON.parse(localStorage.getItem('codexPinnedThreads') || '[]')),
       lastFailedMessage: null,
       tts: {
         enabled: false,
@@ -411,21 +402,15 @@
     function renderThreads() {
       el.threads.innerHTML = '';
       const q = (el.searchInput.value || '').trim().toLowerCase();
-      const sorted = [...state.threads].sort((a, b) => {
-        const ap = state.pinnedThreadIds.has(a.id) ? 1 : 0;
-        const bp = state.pinnedThreadIds.has(b.id) ? 1 : 0;
-        if (ap !== bp) return bp - ap;
-        return (b.updatedAt || 0) - (a.updatedAt || 0);
-      });
+      const sorted = [...state.threads].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
       for (const t of sorted) {
         const preview = (t.preview || '(no preview)');
         if (q && !preview.toLowerCase().includes(q) && !t.id.toLowerCase().includes(q)) continue;
         const div = document.createElement('div');
         div.className = 'thread' + (t.id === state.selectedThreadId ? ' active' : '');
         const dt = new Date((t.updatedAt || t.createdAt || 0) * 1000);
-        const pin = state.pinnedThreadIds.has(t.id) ? '[PIN] ' : '';
         div.innerHTML = `
-          <div class="preview">${pin}${preview.replaceAll('<','&lt;')}</div>
+          <div class="preview">${preview.replaceAll('<','&lt;')}</div>
           <div class="meta">${t.id.slice(0,8)} • ${t.source || 'unknown'} • ${isNaN(dt) ? '' : dt.toLocaleString()}</div>
         `;
         div.onclick = async () => {
@@ -621,49 +606,6 @@
       if (!state.lastFailedMessage) return;
       el.input.value = state.lastFailedMessage;
       await sendMessage();
-    };
-    el.pinBtn.onclick = () => {
-      if (!state.selectedThreadId) return;
-      if (state.pinnedThreadIds.has(state.selectedThreadId)) state.pinnedThreadIds.delete(state.selectedThreadId);
-      else state.pinnedThreadIds.add(state.selectedThreadId);
-      localStorage.setItem('codexPinnedThreads', JSON.stringify([...state.pinnedThreadIds]));
-      renderThreads();
-    };
-    el.archiveBtn.onclick = async () => {
-      if (!state.selectedThreadId) return;
-      try {
-        await api(`./api/threads/${state.selectedThreadId}/archive`, {
-          method: 'POST',
-          body: JSON.stringify({ archived: true }),
-        });
-        setStatus('Archived');
-        await loadThreads();
-      } catch (e) {
-        setStatus(String(e), true);
-      }
-    };
-    el.unarchiveBtn.onclick = async () => {
-      if (!state.selectedThreadId) return;
-      try {
-        await api(`./api/threads/${state.selectedThreadId}/archive`, {
-          method: 'POST',
-          body: JSON.stringify({ archived: false }),
-        });
-        setStatus('Unarchived');
-        await loadThreads();
-      } catch (e) {
-        setStatus(String(e), true);
-      }
-    };
-    el.materializeBtn.onclick = async () => {
-      if (!state.selectedThreadId) return;
-      try {
-        await api(`./api/threads/${state.selectedThreadId}/materialize`, { method: 'POST', body: '{}' });
-        setStatus('Materialized');
-        await loadThread(state.selectedThreadId);
-      } catch (e) {
-        setStatus(String(e), true);
-      }
     };
     el.input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
