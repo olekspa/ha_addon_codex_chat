@@ -7,14 +7,14 @@ import os
 import re
 import time
 import threading
+import hashlib
 from pathlib import Path
 from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 OPTIONS_PATH = Path("/data/options.json")
@@ -25,6 +25,37 @@ THREADS_CACHE_TTL_S = 2.5
 THREADS_CACHE_LOCK = threading.Lock()
 THREADS_CACHE: dict[str, Any] = {"key": None, "expires": 0.0, "data": None}
 DEFAULT_NOTIFY_TEXT_MAX_CHARS = int(os.getenv("NOTIFY_TEXT_MAX_CHARS", "4000"))
+APP_VERSION = "0.3.0"
+FORBIDDEN_BUTTON_LABELS = (
+    "Speak Last",
+    "Assist Input",
+    "Assist Last",
+    "Pin",
+    "Archive",
+    "Unarchive",
+    "Materialize",
+)
+FORBIDDEN_BUTTON_IDS = (
+    "speakLastBtn",
+    "assistInputBtn",
+    "assistLastBtn",
+    "pinBtn",
+    "archiveBtn",
+    "unarchiveBtn",
+    "materializeBtn",
+)
+FORBIDDEN_BUTTON_BY_LABEL_RE = re.compile(
+    r"<button\b[^>]*>\s*(?:"
+    + "|".join(re.escape(label) for label in FORBIDDEN_BUTTON_LABELS)
+    + r")\s*</button>",
+    re.IGNORECASE,
+)
+FORBIDDEN_BUTTON_BY_ID_RE = re.compile(
+    r"<button\b[^>]*\bid=['\"](?:"
+    + "|".join(re.escape(button_id) for button_id in FORBIDDEN_BUTTON_IDS)
+    + r")['\"][^>]*>.*?</button>",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 class Settings(BaseModel):
@@ -64,7 +95,7 @@ def load_settings() -> Settings:
     )
 
 
-app = FastAPI(title="Codex Chat Add-on", version="0.2.9")
+app = FastAPI(title="Codex Chat Add-on", version=APP_VERSION)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -72,9 +103,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-
 
 class ThreadStartBody(BaseModel):
     cwd: str | None = None
@@ -172,6 +200,25 @@ def parse_service(service: str) -> tuple[str, str]:
     if not re.fullmatch(r"[a-z0-9_]+\.[a-z0-9_]+", value):
         raise HTTPException(status_code=400, detail="Invalid service format; expected '<domain>.<service>'")
     return tuple(value.split(".", 1))  # type: ignore[return-value]
+
+
+def render_index_html() -> str:
+    raw = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    # Hard safety net: strip deprecated action buttons from delivered markup.
+    sanitized = FORBIDDEN_BUTTON_BY_ID_RE.sub("", raw)
+    sanitized = FORBIDDEN_BUTTON_BY_LABEL_RE.sub("", sanitized)
+    return sanitized
+
+
+def html_no_cache_headers(html_text: str) -> dict[str, str]:
+    digest = hashlib.sha256(html_text.encode("utf-8")).hexdigest()[:12]
+    return {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0",
+        "X-Codex-Chat-Version": APP_VERSION,
+        "X-Codex-Chat-UI-SHA": digest,
+    }
 
 
 def supervisor_headers() -> dict[str, str]:
@@ -340,8 +387,19 @@ async def api_health() -> dict[str, Any]:
     return {
         "ok": True,
         "addon": "codex_chat",
+        "version": APP_VERSION,
         "relay_url": settings.relay_url,
         "relay": relay_health,
+    }
+
+
+@app.get("/api/version")
+async def api_version() -> dict[str, Any]:
+    html = render_index_html()
+    return {
+        "ok": True,
+        "version": APP_VERSION,
+        "ui_sha": hashlib.sha256(html.encode("utf-8")).hexdigest(),
     }
 
 
@@ -647,15 +705,15 @@ async def api_turn_start(thread_id: str, body: TurnBody) -> dict[str, Any]:
 
 
 @app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(
-        str(STATIC_DIR / "index.html"),
-        headers={
-            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-            "Pragma": "no-cache",
-            "Expires": "0",
-        },
-    )
+async def index() -> HTMLResponse:
+    html = render_index_html()
+    return HTMLResponse(content=html, headers=html_no_cache_headers(html))
+
+
+@app.get("/static/index.html")
+async def static_index() -> HTMLResponse:
+    html = render_index_html()
+    return HTMLResponse(content=html, headers=html_no_cache_headers(html))
 
 
 @app.on_event("startup")
