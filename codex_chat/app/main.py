@@ -24,6 +24,7 @@ LOG = logging.getLogger("codex-chat-addon")
 THREADS_CACHE_TTL_S = 2.5
 THREADS_CACHE_LOCK = threading.Lock()
 THREADS_CACHE: dict[str, Any] = {"key": None, "expires": 0.0, "data": None}
+DEFAULT_NOTIFY_TEXT_MAX_CHARS = int(os.getenv("NOTIFY_TEXT_MAX_CHARS", "4000"))
 
 
 class Settings(BaseModel):
@@ -40,6 +41,7 @@ class Settings(BaseModel):
     assist_agent_id: str = ""
     assist_language: str = ""
     notify_webhook_id: str = "velox_funis_webhook"
+    notify_text_max_chars: int = DEFAULT_NOTIFY_TEXT_MAX_CHARS
 
 
 def load_settings() -> Settings:
@@ -58,6 +60,7 @@ def load_settings() -> Settings:
         default_wait=os.getenv("DEFAULT_WAIT", "true").lower() == "true",
         wait_timeout=int(os.getenv("WAIT_TIMEOUT", "120")),
         poll_interval=float(os.getenv("POLL_INTERVAL", "1.0")),
+        notify_text_max_chars=int(os.getenv("NOTIFY_TEXT_MAX_CHARS", str(DEFAULT_NOTIFY_TEXT_MAX_CHARS))),
     )
 
 
@@ -138,6 +141,30 @@ def detail_text(detail: Any) -> str:
         return json.dumps(detail, ensure_ascii=True)
     except Exception:
         return str(detail)
+
+
+def _truncate_text(value: str, max_chars: int) -> tuple[str, bool]:
+    text = value or ""
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text, False
+    suffix = "… [truncated]"
+    keep = max(0, max_chars - len(suffix))
+    return text[:keep] + suffix, True
+
+
+def _sanitize_notify_data(data: dict[str, Any] | None, max_chars: int) -> tuple[dict[str, Any] | None, list[str]]:
+    if data is None:
+        return None, []
+    out: dict[str, Any] = dict(data)
+    truncated_fields: list[str] = []
+    for key in ("human_response", "response", "message", "text"):
+        val = out.get(key)
+        if isinstance(val, str):
+            new_val, changed = _truncate_text(val, max_chars)
+            if changed:
+                out[key] = new_val
+                truncated_fields.append(f"data.{key}")
+    return out, truncated_fields
 
 
 def parse_service(service: str) -> tuple[str, str]:
@@ -372,8 +399,18 @@ async def api_ha_tts(body: HaTtsBody) -> dict[str, Any]:
     service = (body.service or settings.tts_service).strip() or "tts.speak"
     entity_id = (body.entity_id or settings.tts_entity_id).strip()
     media_player_entity_id = (body.media_player_entity_id or settings.tts_media_player_entity_id).strip()
+    # Compatibility fallback: allow callers that provide a media_player in entity_id
+    # to work with tts.speak without duplicating config fields.
+    if service == "tts.speak" and not media_player_entity_id and entity_id.startswith("media_player."):
+        media_player_entity_id = entity_id
     if service == "tts.speak" and not media_player_entity_id:
-        raise HTTPException(status_code=400, detail="media_player_entity_id is required when service is tts.speak")
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "media_player_entity_id is required when service is tts.speak. "
+                "Set add-on option tts_media_player_entity_id (for example media_player.your_desktop)"
+            ),
+        )
 
     payload: dict[str, Any] = {"message": message}
     if entity_id:
@@ -443,9 +480,11 @@ async def api_ha_notify_config() -> dict[str, Any]:
 @app.post("/api/ha/notify")
 async def api_ha_notify(body: HaNotifyBody) -> dict[str, Any]:
     settings = load_settings()
+    max_chars = max(200, int(settings.notify_text_max_chars))
     message = (body.message or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
+    message, message_truncated = _truncate_text(message, max_chars)
     webhook_id = (body.webhook_id or settings.notify_webhook_id).strip()
     if not webhook_id:
         raise HTTPException(status_code=400, detail="webhook_id is required")
@@ -454,10 +493,20 @@ async def api_ha_notify(body: HaNotifyBody) -> dict[str, Any]:
         "message": message,
         "level": (body.level or "info").strip() or "info",
     }
+    truncated_fields: list[str] = ["message"] if message_truncated else []
     if body.data is not None:
-        payload["data"] = body.data
+        safe_data, data_truncated = _sanitize_notify_data(body.data, max_chars)
+        payload["data"] = safe_data
+        truncated_fields.extend(data_truncated)
     result = await ha_webhook_call(webhook_id, payload)
-    return {"ok": True, "webhook_id": webhook_id, "result": result}
+    return {
+        "ok": True,
+        "webhook_id": webhook_id,
+        "result": result,
+        "truncated": bool(truncated_fields),
+        "truncated_fields": truncated_fields,
+        "notify_text_max_chars": max_chars,
+    }
 
 
 @app.get("/api/threads")

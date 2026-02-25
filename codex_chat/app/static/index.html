@@ -50,6 +50,13 @@
     }
     .title { font-weight: 700; letter-spacing: 0.2px; }
     .toolbar { display: flex; gap: 8px; align-items: center; }
+    .header-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
     .chat-header .toolbar {
       flex-wrap: wrap;
       justify-content: flex-end;
@@ -158,6 +165,22 @@
       .chat-header .toolbar {
         justify-content: flex-start;
       }
+      .header-actions {
+        display: none;
+      }
+      body.mobile-actions-open .header-actions {
+        display: flex;
+        position: fixed;
+        top: 64px;
+        left: 8px;
+        right: 8px;
+        z-index: 26;
+        padding: 10px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--panel);
+        box-shadow: 0 10px 24px rgba(0,0,0,0.16);
+      }
       .chat-header .toolbar button,
       .chat-header .toolbar select,
       .chat-header .toolbar input {
@@ -230,27 +253,30 @@
     <section class="panel chat">
       <div class="chat-header">
         <div>
-          <div class="title">Codex Chat</div>
+        <div class="title">Codex Chat</div>
           <div id="status" class="status">Loading...</div>
         </div>
         <div class="toolbar">
           <button id="openThreadsBtn" class="secondary mobile-only">Threads</button>
-          <label><input id="autoRefreshToggle" type="checkbox" checked /> Auto</label>
-          <select id="autoRefreshInterval">
-            <option value="1.5">1.5s</option>
-            <option value="2.5" selected>2.5s</option>
-            <option value="5">5s</option>
-          </select>
-          <label><input id="ttsAutoToggle" type="checkbox" /> TTS</label>
-          <button id="speakLastBtn" class="secondary">Speak Last</button>
-          <label><input id="assistAutoToggle" type="checkbox" /> Assist</label>
-          <button id="assistInputBtn" class="secondary">Assist Input</button>
-          <button id="assistLastBtn" class="secondary">Assist Last</button>
-          <button id="pinBtn" class="secondary">Pin</button>
-          <button id="archiveBtn" class="secondary">Archive</button>
-          <button id="unarchiveBtn" class="secondary">Unarchive</button>
-          <button id="materializeBtn" class="secondary">Materialize</button>
-          <button id="newThreadBtn" class="secondary">New Thread</button>
+          <button id="mobileActionsBtn" class="secondary mobile-only">Actions</button>
+          <div id="headerActions" class="header-actions">
+            <label><input id="autoRefreshToggle" type="checkbox" checked /> Auto</label>
+            <select id="autoRefreshInterval">
+              <option value="1.5">1.5s</option>
+              <option value="2.5" selected>2.5s</option>
+              <option value="5">5s</option>
+            </select>
+            <label><input id="ttsAutoToggle" type="checkbox" /> TTS</label>
+            <button id="speakLastBtn" class="secondary">Speak Last</button>
+            <label><input id="assistAutoToggle" type="checkbox" /> Assist</label>
+            <button id="assistInputBtn" class="secondary">Assist Input</button>
+            <button id="assistLastBtn" class="secondary">Assist Last</button>
+            <button id="pinBtn" class="secondary">Pin</button>
+            <button id="archiveBtn" class="secondary">Archive</button>
+            <button id="unarchiveBtn" class="secondary">Unarchive</button>
+            <button id="materializeBtn" class="secondary">Materialize</button>
+            <button id="newThreadBtn" class="secondary">New Thread</button>
+          </div>
         </div>
       </div>
       <div id="messages" class="messages"></div>
@@ -272,6 +298,8 @@
       refreshBtn: document.getElementById('refreshBtn'),
       sidebarPanel: document.getElementById('sidebarPanel'),
       openThreadsBtn: document.getElementById('openThreadsBtn'),
+      mobileActionsBtn: document.getElementById('mobileActionsBtn'),
+      headerActions: document.getElementById('headerActions'),
       closeThreadsBtn: document.getElementById('closeThreadsBtn'),
       searchInput: document.getElementById('searchInput'),
       newThreadBtn: document.getElementById('newThreadBtn'),
@@ -299,8 +327,18 @@
       document.body.classList.remove('thread-menu-open');
     }
 
+    function closeMobileActions() {
+      document.body.classList.remove('mobile-actions-open');
+    }
+
+    function toggleMobileActions() {
+      if (!isMobileLayout()) return;
+      document.body.classList.toggle('mobile-actions-open');
+    }
+
     function openThreadMenu() {
       if (!isMobileLayout()) return;
+      closeMobileActions();
       document.body.classList.add('thread-menu-open');
     }
 
@@ -581,6 +619,14 @@
 
     el.refreshBtn.onclick = () => loadThreads().catch(e => setStatus(String(e), true));
     el.openThreadsBtn.onclick = () => openThreadMenu();
+    el.mobileActionsBtn.onclick = () => toggleMobileActions();
+    el.headerActions.onclick = (e) => {
+      if (!isMobileLayout()) return;
+      const target = e.target;
+      if (target instanceof HTMLElement && target.closest('button')) {
+        closeMobileActions();
+      }
+    };
     el.closeThreadsBtn.onclick = () => closeThreadMenu();
     el.newThreadBtn.onclick = () => createThread().catch(e => setStatus(String(e), true));
     el.resumeBtn.onclick = () => resumeThread().catch(e => setStatus(String(e), true));
@@ -642,6 +688,7 @@
     });
     window.addEventListener('resize', () => {
       if (!isMobileLayout()) closeThreadMenu();
+      if (!isMobileLayout()) closeMobileActions();
     });
     document.addEventListener('click', (e) => {
       if (!isMobileLayout()) return;
@@ -649,8 +696,17 @@
       if (el.sidebarPanel.contains(e.target) || el.openThreadsBtn.contains(e.target)) return;
       closeThreadMenu();
     });
+    document.addEventListener('click', (e) => {
+      if (!isMobileLayout()) return;
+      if (!document.body.classList.contains('mobile-actions-open')) return;
+      if (el.mobileActionsBtn.contains(e.target) || el.headerActions.contains(e.target)) return;
+      closeMobileActions();
+    });
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') closeThreadMenu();
+      if (e.key === 'Escape') {
+        closeThreadMenu();
+        closeMobileActions();
+      }
     });
 
     function resetAutoRefreshTimer() {
