@@ -33,6 +33,7 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+_HOME_ASSISTANT_ENTITY_ID = "conversation.home_assistant"
 
 
 @dataclass
@@ -68,6 +69,7 @@ class FunisConversationAgent(ConversationEntity, conversation.AbstractConversati
         self._attr_name = entry.title
         self._store: Store[dict[str, str]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._map: dict[str, str] = {}
+        self._last_reply_by_conv: dict[str, str] = {}
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
@@ -96,10 +98,18 @@ class FunisConversationAgent(ConversationEntity, conversation.AbstractConversati
             # First route through HA's built-in conversation agent so exposed-entity
             # control/intents work natively. Fall back to Funis relay only when HA
             # reports no intent match.
-            ha_result = await self._ha_builtin_process(user_input, conv_id)
+            try:
+                ha_result = await self._ha_builtin_process(user_input, conv_id)
+            except Exception as err:
+                _LOGGER.debug("HA built-in routing unavailable, continuing with Funis relay: %s", err)
+                ha_result = None
             if ha_result is not None:
+                speech = _extract_ha_speech_from_result(ha_result)
+                if speech:
+                    self._last_reply_by_conv[conv_id] = speech
                 return ha_result
 
+            previous_reply = self._last_reply_by_conv.get(conv_id, "")
             thread_id = self._map.get(conv_id)
             if not thread_id:
                 start_payload: dict[str, Any] = {
@@ -144,12 +154,19 @@ class FunisConversationAgent(ConversationEntity, conversation.AbstractConversati
                     "waitPoll": str(cfg.wait_poll),
                 },
             )
-            text = _extract_last_agent_message(out)
+            text = _extract_new_agent_message(out, previous_reply)
             if not text:
                 # Some relay/app-server paths complete before agent text is fully materialized.
-                text = await self._poll_for_agent_message(cfg, thread_id, timeout_s=min(cfg.wait_timeout, 20))
+                text = await self._poll_for_agent_message(
+                    cfg,
+                    thread_id,
+                    previous_reply=previous_reply,
+                    timeout_s=min(cfg.wait_timeout, 20),
+                )
             if not text:
                 text = "I completed the request, but no assistant message was returned."
+            else:
+                self._last_reply_by_conv[conv_id] = text
             response.async_set_speech(text)
         except Exception as err:
             _LOGGER.exception("Funis conversation failed")
@@ -166,21 +183,35 @@ class FunisConversationAgent(ConversationEntity, conversation.AbstractConversati
 
     async def _ha_builtin_process(self, user_input: ConversationInput, conv_id: str) -> ConversationResult | None:
         """Try HA native conversation first; return None when relay fallback is needed."""
-        data: dict[str, Any] = {
-            "text": user_input.text,
-            "language": user_input.language,
-            "agent_id": "home_assistant",
-            "conversation_id": conv_id,
-        }
-        result = await self.hass.services.async_call(
-            "conversation",
-            "process",
-            data,
-            blocking=True,
-            return_response=True,
-            context=user_input.context,
-        )
-        if not isinstance(result, dict):
+        result: dict[str, Any] | None = None
+        for agent_id in self._builtin_agent_id_candidates():
+            data: dict[str, Any] = {
+                "text": user_input.text,
+                "language": user_input.language,
+                "agent_id": agent_id,
+                "conversation_id": conv_id,
+            }
+            try:
+                call_result = await self.hass.services.async_call(
+                    "conversation",
+                    "process",
+                    data,
+                    blocking=True,
+                    return_response=True,
+                    context=user_input.context,
+                )
+            except Exception as err:
+                msg = str(err).lower()
+                if "invalid agent" in msg or "agent_id" in msg:
+                    _LOGGER.debug("Skipping invalid built-in agent id '%s': %s", agent_id, err)
+                    continue
+                raise
+
+            if isinstance(call_result, dict):
+                result = call_result
+                break
+
+        if result is None:
             return None
 
         resp_obj = result.get("response")
@@ -208,6 +239,50 @@ class FunisConversationAgent(ConversationEntity, conversation.AbstractConversati
             conversation_id=out_conv_id,
             continue_conversation=continue_conversation,
         )
+
+    def _builtin_agent_id_candidates(self) -> list[str]:
+        """Return likely-valid IDs for the built-in Home Assistant conversation agent."""
+        candidates: list[str] = []
+        home_agent_const = getattr(getattr(conversation, "const", object()), "HOME_ASSISTANT_AGENT", None)
+        if isinstance(home_agent_const, str) and home_agent_const:
+            candidates.append(home_agent_const)
+
+        try:
+            manager = conversation.get_agent_manager(self.hass)
+            for info in manager.async_get_agent_info():
+                agent_id = getattr(info, "id", None)
+                if isinstance(agent_id, str) and agent_id:
+                    candidates.append(agent_id)
+                try:
+                    agent = manager.async_get_agent(agent_id)
+                except Exception:
+                    continue
+                registry_entry = getattr(agent, "registry_entry", None)
+                entity_id = getattr(registry_entry, "entity_id", None)
+                if isinstance(entity_id, str) and entity_id:
+                    candidates.append(entity_id)
+                name = str(getattr(info, "name", "")).lower()
+                if name == "home assistant":
+                    if isinstance(agent_id, str) and agent_id:
+                        candidates.append(agent_id)
+                    if isinstance(entity_id, str) and entity_id:
+                        candidates.append(entity_id)
+        except Exception as err:
+            _LOGGER.debug("Unable to enumerate conversation agents for built-in fallback: %s", err)
+
+        candidates.extend([_HOME_ASSISTANT_ENTITY_ID, "home_assistant"])
+        # Preserve order, remove duplicates/empty values.
+        ordered_unique: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            if not isinstance(candidate, str):
+                continue
+            cid = candidate.strip()
+            if not cid or cid in seen:
+                continue
+            seen.add(cid)
+            ordered_unique.append(cid)
+        return ordered_unique
 
     def _cfg(self) -> _RelayConfig:
         data = self.entry.data
@@ -261,7 +336,13 @@ class FunisConversationAgent(ConversationEntity, conversation.AbstractConversati
         except Exception as err:
             raise RuntimeError(f"Relay {path} returned invalid JSON") from err
 
-    async def _poll_for_agent_message(self, cfg: _RelayConfig, thread_id: str, timeout_s: int) -> str:
+    async def _poll_for_agent_message(
+        self,
+        cfg: _RelayConfig,
+        thread_id: str,
+        previous_reply: str,
+        timeout_s: int,
+    ) -> str:
         deadline = self.hass.loop.time() + max(3, timeout_s)
         while self.hass.loop.time() < deadline:
             read = await self._relay_get(
@@ -269,20 +350,21 @@ class FunisConversationAgent(ConversationEntity, conversation.AbstractConversati
                 f"/threads/{thread_id}",
                 params={"includeTurns": "true"},
             )
-            text = _extract_last_agent_message(read)
+            text = _extract_new_agent_message(read, previous_reply)
             if text:
                 return text
             await asyncio.sleep(max(0.2, cfg.wait_poll))
         return ""
 
 
-def _extract_last_agent_message(payload: dict[str, Any]) -> str:
+def _extract_last_agent_message(payload: dict[str, Any], latest_turn_only: bool = False) -> str:
     thread_read = payload.get("threadRead") if isinstance(payload.get("threadRead"), dict) else payload
     thread = thread_read.get("thread") if isinstance(thread_read, dict) else None
     turns = thread.get("turns") if isinstance(thread, dict) else None
     if not isinstance(turns, list):
         return ""
-    for turn in reversed(turns):
+    turns_iter = [turns[-1]] if latest_turn_only and turns else reversed(turns)
+    for turn in turns_iter:
         if not isinstance(turn, dict):
             continue
         items = turn.get("items")
@@ -305,6 +387,35 @@ def _extract_last_agent_message(payload: dict[str, Any]) -> str:
                     joined = "\n".join(parts).strip()
                     if joined:
                         return joined
+    return ""
+
+
+def _extract_new_agent_message(payload: dict[str, Any], previous_reply: str) -> str:
+    # Restrict to the newest turn so we don't replay finalized text from an older turn.
+    text = _extract_last_agent_message(payload, latest_turn_only=True)
+    if not text:
+        return ""
+    if previous_reply and text.strip() == previous_reply.strip():
+        return ""
+    return text
+
+
+def _extract_ha_speech_from_result(result: ConversationResult) -> str:
+    try:
+        speech = getattr(result.response, "speech", None)
+        if isinstance(speech, dict):
+            plain = speech.get("plain")
+            if isinstance(plain, dict):
+                text = plain.get("speech")
+                if isinstance(text, str):
+                    return text.strip()
+        data = getattr(result.response, "as_dict", None)
+        if callable(data):
+            out = data()
+            if isinstance(out, dict):
+                return _extract_ha_speech(out)
+    except Exception:
+        return ""
     return ""
 
 

@@ -58,6 +58,10 @@ Recommended HA automation for that webhook:
 - Trigger: Webhook (`velox_funis_webhook`, POST)
 - Action 1: `notify.mobile_app_<your_phone>`
 - Action 2 (optional fallback): `persistent_notification.create`
+- Notification message template: `{{ trigger.json.message | default('No message') }}`
+
+Mom-targeted variant:
+- Create webhook automation `velox_funis_webhook2` with the same message template.
 
 ## Relay Requirements
 Relay should run on LAN host:
