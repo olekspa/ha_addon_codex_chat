@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Codex Chat v0.3.0</title>
+  <title>Codex Chat v__APP_VERSION__</title>
   <style>
     :root {
       --bg: #f7f5ef;
@@ -362,7 +362,7 @@
     <section class="panel chat">
       <div class="chat-header">
         <div>
-        <div class="title">Codex Chat v0.3.0</div>
+        <div class="title">Codex Chat v__APP_VERSION__</div>
           <div id="status" class="status">Loading...</div>
         </div>
         <div class="toolbar">
@@ -512,8 +512,25 @@
       const txt = await res.text();
       let data;
       try { data = txt ? JSON.parse(txt) : {}; } catch { data = { raw: txt }; }
-      if (!res.ok) throw new Error(typeof data === 'string' ? data : (data.detail || data.error || txt));
+      if (!res.ok) {
+        const detail = (data && typeof data === 'object')
+          ? (data.detail ?? data.error ?? data.raw ?? txt)
+          : (data || txt);
+        throw new Error(errorText(detail));
+      }
       return data;
+    }
+
+    function errorText(value) {
+      if (typeof value === 'string') return value;
+      if (value && typeof value === 'object') {
+        try {
+          return JSON.stringify(value);
+        } catch (_err) {
+          return String(value);
+        }
+      }
+      return String(value || 'Unknown error');
     }
 
     function renderThreads() {

@@ -25,7 +25,7 @@ THREADS_CACHE_TTL_S = 2.5
 THREADS_CACHE_LOCK = threading.Lock()
 THREADS_CACHE: dict[str, Any] = {"key": None, "expires": 0.0, "data": None}
 DEFAULT_NOTIFY_TEXT_MAX_CHARS = int(os.getenv("NOTIFY_TEXT_MAX_CHARS", "4000"))
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.2"
 FORBIDDEN_BUTTON_LABELS = (
     "Speak Last",
     "Assist Input",
@@ -204,6 +204,7 @@ def parse_service(service: str) -> tuple[str, str]:
 
 def render_index_html() -> str:
     raw = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    raw = raw.replace("__APP_VERSION__", APP_VERSION)
     # Hard safety net: strip deprecated action buttons from delivered markup.
     sanitized = FORBIDDEN_BUTTON_BY_ID_RE.sub("", raw)
     sanitized = FORBIDDEN_BUTTON_BY_LABEL_RE.sub("", sanitized)
