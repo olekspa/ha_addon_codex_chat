@@ -71,6 +71,9 @@
       padding-bottom: 5px;
       font-size: 12px;
     }
+    #cwdInput {
+      min-width: 240px;
+    }
     .toolbar input, .toolbar select {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -124,6 +127,74 @@
       line-height: 1.35;
       white-space: pre-wrap;
       box-shadow: 0 2px 7px rgba(15, 23, 42, 0.05);
+    }
+    .msg-content {
+      white-space: normal;
+      word-break: break-word;
+    }
+    .msg-content p {
+      margin: 0 0 10px;
+    }
+    .msg-content p:last-child {
+      margin-bottom: 0;
+    }
+    .msg-content h1,
+    .msg-content h2,
+    .msg-content h3 {
+      margin: 0 0 8px;
+      line-height: 1.25;
+    }
+    .msg-content h1 { font-size: 18px; }
+    .msg-content h2 { font-size: 16px; }
+    .msg-content h3 { font-size: 14px; }
+    .msg-content blockquote {
+      margin: 0 0 10px;
+      padding: 8px 10px;
+      border-left: 3px solid #99f6e4;
+      background: #f0fdfa;
+      color: #134e4a;
+      border-radius: 6px;
+    }
+    .msg-content ul,
+    .msg-content ol {
+      margin: 0 0 10px 18px;
+      padding: 0;
+    }
+    .msg-content li {
+      margin: 0 0 4px;
+    }
+    .msg-content pre {
+      margin: 0 0 10px;
+      padding: 10px;
+      border-radius: 10px;
+      border: 1px solid #cbd5e1;
+      background: #0f172a;
+      color: #e2e8f0;
+      overflow: auto;
+      white-space: pre;
+    }
+    .msg-content pre code {
+      white-space: pre;
+      font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
+    .msg-content .code-lang {
+      margin-bottom: 6px;
+      font-size: 11px;
+      color: #93c5fd;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+    .msg-content code {
+      font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+      font-size: 12px;
+      background: #e2e8f0;
+      border-radius: 6px;
+      padding: 1px 5px;
+    }
+    .msg-content a {
+      color: var(--accent-2);
+      text-decoration: underline;
     }
     .msg.user { background: #f0fdfa; border-color: #99f6e4; align-self: flex-end; }
     .msg.agent { background: #f8fafc; align-self: flex-start; }
@@ -298,6 +369,7 @@
           <button id="openThreadsBtn" class="secondary mobile-only">Threads</button>
           <button id="mobileActionsBtn" class="secondary mobile-only">Actions</button>
           <div id="headerActions" class="header-actions">
+            <input id="cwdInput" placeholder="cwd (absolute path)" />
             <label><input id="autoRefreshToggle" type="checkbox" checked /> Auto</label>
             <select id="autoRefreshInterval">
               <option value="1.5">1.5s</option>
@@ -338,6 +410,7 @@
       autoRefreshToggle: document.getElementById('autoRefreshToggle'),
       autoRefreshInterval: document.getElementById('autoRefreshInterval'),
       ttsAutoToggle: document.getElementById('ttsAutoToggle'),
+      cwdInput: document.getElementById('cwdInput'),
     };
 
     function isMobileLayout() {
@@ -399,6 +472,7 @@
       autoRefreshTimer: null,
       lastThreadUpdatedAt: 0,
       lastFailedMessage: null,
+      cwd: '',
       tts: {
         enabled: false,
         service: 'tts.speak',
@@ -410,6 +484,20 @@
     function setStatus(text, isError = false) {
       el.status.textContent = text;
       el.status.className = isError ? 'status error' : 'status';
+    }
+
+    function getConfiguredCwd() {
+      const value = (state.cwd || '').trim();
+      return value.startsWith('/') ? value : '';
+    }
+
+    function saveCwd(value) {
+      state.cwd = (value || '').trim();
+      try {
+        localStorage.setItem('codexChat.cwd', state.cwd);
+      } catch (_err) {
+        // Ignore storage failures.
+      }
     }
 
     async function api(path, options = {}) {
@@ -452,10 +540,78 @@
       }
     }
 
-    function pushMessage(type, text, extraClass = '') {
+    function escapeHtml(text) {
+      return (text || '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    function renderRichText(text) {
+      const source = String(text || '').replace(/\r\n/g, '\n');
+      let escaped = escapeHtml(source);
+
+      const codeBlocks = [];
+      escaped = escaped.replace(/```[ \t]*([a-zA-Z0-9_-]+)?\n([\s\S]*?)```/g, (_m, lang, code) => {
+        const idx = codeBlocks.length;
+        const langLabel = lang ? `<div class="code-lang">${lang}</div>` : '';
+        codeBlocks.push(`<pre>${langLabel}<code>${code}</code></pre>`);
+        return `@@CODEBLOCK_${idx}@@`;
+      });
+
+      escaped = escaped.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_m, label, url) => {
+        return `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+      });
+      escaped = escaped.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+      escaped = escaped.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      escaped = escaped.replace(/(^|[^\*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+      escaped = escaped.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+      escaped = escaped.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+      escaped = escaped.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+      escaped = escaped.replace(/^&gt;\s?(.*)$/gm, '<blockquote>$1</blockquote>');
+      escaped = escaped.replace(/(?:^|\n)([-*]\s.+(?:\n[-*]\s.+)*)/g, (full, list) => {
+        const items = list
+          .split('\n')
+          .map((line) => line.replace(/^[-*]\s+/, '').trim())
+          .map((item) => `<li>${item}</li>`)
+          .join('');
+        const prefix = full.startsWith('\n') ? '\n' : '';
+        return `${prefix}<ul>${items}</ul>`;
+      });
+
+      const paragraphs = escaped
+        .split(/\n{2,}/)
+        .map((block) => block.trim())
+        .filter(Boolean)
+        .map((block) => {
+          if (block.startsWith('<h1>') || block.startsWith('<h2>') || block.startsWith('<h3>')
+            || block.startsWith('<pre>') || block.startsWith('<blockquote>') || block.startsWith('<ul>')) {
+            return block;
+          }
+          return `<p>${block.replace(/\n/g, '<br>')}</p>`;
+        })
+        .join('');
+
+      return paragraphs.replace(/@@CODEBLOCK_(\d+)@@/g, (_m, indexStr) => {
+        const index = Number(indexStr);
+        return Number.isFinite(index) ? (codeBlocks[index] || '') : '';
+      });
+    }
+
+    function pushMessage(type, text, extraClass = '', opts = {}) {
+      const rich = Boolean(opts.rich);
       const d = document.createElement('div');
       d.className = 'msg ' + (type === 'user' ? 'user' : 'agent') + (extraClass ? ` ${extraClass}` : '');
-      d.textContent = text || '';
+      const content = document.createElement('div');
+      content.className = 'msg-content';
+      if (rich) {
+        content.innerHTML = renderRichText(text || '');
+      } else {
+        content.textContent = text || '';
+      }
+      d.appendChild(content);
       el.messages.appendChild(d);
       el.messages.scrollTop = el.messages.scrollHeight;
     }
@@ -469,7 +625,7 @@
             const joined = (item.content || []).map(c => c.text || '').join('\n');
             pushMessage('user', joined);
           } else if (item.type === 'agentMessage') {
-            pushMessage('agent', item.text || '');
+            pushMessage('agent', item.text || '', '', { rich: true });
           }
         }
         if (turn.status && turn.status !== 'completed') {
@@ -522,7 +678,9 @@
 
     async function loadThreads() {
       setStatus('Loading threads...');
-      const data = await api('./api/threads?limit=50&sourceKinds=vscode');
+      const cwd = getConfiguredCwd();
+      const suffix = cwd ? `&cwd=${encodeURIComponent(cwd)}` : '';
+      const data = await api(`./api/threads?limit=50&sourceKinds=vscode${suffix}`);
       state.threads = data.data || [];
       state.lastThreadUpdatedAt = state.threads.reduce((m, t) => Math.max(m, t.updatedAt || 0), 0);
       if (!state.selectedThreadId && state.threads.length) {
@@ -547,9 +705,13 @@
 
     async function createThread() {
       setStatus('Creating thread...');
+      const cwd = getConfiguredCwd();
       const data = await api('./api/threads/start', {
         method: 'POST',
-        body: JSON.stringify({ approvalPolicy: 'never' }),
+        body: JSON.stringify({
+          approvalPolicy: 'never',
+          cwd: cwd || undefined,
+        }),
       });
       const id = data?.thread?.id;
       if (!id) throw new Error('thread/start returned no id');
@@ -561,9 +723,10 @@
     async function resumeThread() {
       if (!state.selectedThreadId) return;
       setStatus('Resuming thread...');
+      const cwd = getConfiguredCwd();
       await api(`./api/threads/${state.selectedThreadId}/resume`, {
         method: 'POST',
-        body: JSON.stringify({}),
+        body: JSON.stringify({ cwd: cwd || undefined }),
       });
       setStatus('Thread resumed');
     }
@@ -670,7 +833,9 @@
       state.autoRefreshTimer = setInterval(async () => {
         if (!el.autoRefreshToggle.checked || !state.selectedThreadId || state.busy) return;
         try {
-          const delta = await api(`./api/threads?limit=50&sourceKinds=vscode&updatedAfter=${state.lastThreadUpdatedAt}`);
+          const cwd = getConfiguredCwd();
+          const suffix = cwd ? `&cwd=${encodeURIComponent(cwd)}` : '';
+          const delta = await api(`./api/threads?limit=50&sourceKinds=vscode&updatedAfter=${state.lastThreadUpdatedAt}${suffix}`);
           if ((delta.data || []).length > 0) {
             await loadThreads();
             await loadThread(state.selectedThreadId, true);
@@ -682,11 +847,30 @@
     }
     el.autoRefreshToggle.onchange = () => resetAutoRefreshTimer();
     el.autoRefreshInterval.onchange = () => resetAutoRefreshTimer();
+    el.cwdInput.addEventListener('change', () => {
+      saveCwd(el.cwdInput.value);
+      loadThreads().catch(e => setStatus(String(e), true));
+    });
+    el.cwdInput.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      saveCwd(el.cwdInput.value);
+      loadThreads().catch(err => setStatus(String(err), true));
+    });
     el.ttsAutoToggle.onchange = () => {
       state.tts.enabled = el.ttsAutoToggle.checked;
     };
     purgeForbiddenButtons();
     new MutationObserver(() => purgeForbiddenButtons()).observe(document.body, { childList: true, subtree: true });
+    try {
+      const rememberedCwd = (localStorage.getItem('codexChat.cwd') || '').trim();
+      if (rememberedCwd) {
+        state.cwd = rememberedCwd;
+        el.cwdInput.value = rememberedCwd;
+      }
+    } catch (_err) {
+      // Ignore storage failures.
+    }
     resetAutoRefreshTimer();
     Promise.all([loadTtsConfig()]).finally(() => {
       loadThreads().catch(e => setStatus(String(e), true));
