@@ -468,6 +468,7 @@
     const state = {
       threads: [],
       selectedThreadId: null,
+      requestedThreadId: null,
       busy: false,
       autoRefreshTimer: null,
       lastThreadUpdatedAt: 0,
@@ -697,8 +698,25 @@
       setStatus('Loading threads...');
       const cwd = getConfiguredCwd();
       const suffix = cwd ? `&cwd=${encodeURIComponent(cwd)}` : '';
-      const data = await api(`./api/threads?limit=50&sourceKinds=vscode${suffix}`);
-      state.threads = data.data || [];
+      const fetchThreads = async () => {
+        const data = await api(`./api/threads?limit=50&sourceKinds=vscode${suffix}`);
+        state.threads = data.data || [];
+      };
+      await fetchThreads();
+      if (state.requestedThreadId) {
+        const exists = state.threads.some((t) => t.id === state.requestedThreadId);
+        if (!exists) {
+          try {
+            await api(`./api/threads/${state.requestedThreadId}/materialize`, { method: 'POST' });
+            await fetchThreads();
+          } catch (_err) {
+            // If materialization fails, continue with default selection behavior.
+          }
+        }
+        if (state.threads.some((t) => t.id === state.requestedThreadId)) {
+          state.selectedThreadId = state.requestedThreadId;
+        }
+      }
       state.lastThreadUpdatedAt = state.threads.reduce((m, t) => Math.max(m, t.updatedAt || 0), 0);
       if (!state.selectedThreadId && state.threads.length) {
         state.selectedThreadId = state.threads[0].id;
@@ -880,6 +898,12 @@
     purgeForbiddenButtons();
     new MutationObserver(() => purgeForbiddenButtons()).observe(document.body, { childList: true, subtree: true });
     try {
+      const params = new URLSearchParams(window.location.search || '');
+      const requestedThreadId = (params.get('thread_id') || '').trim();
+      if (requestedThreadId) {
+        state.requestedThreadId = requestedThreadId;
+        state.selectedThreadId = requestedThreadId;
+      }
       const rememberedCwd = (localStorage.getItem('codexChat.cwd') || '').trim();
       if (rememberedCwd) {
         state.cwd = rememberedCwd;

@@ -25,7 +25,7 @@ THREADS_CACHE_TTL_S = 2.5
 THREADS_CACHE_LOCK = threading.Lock()
 THREADS_CACHE: dict[str, Any] = {"key": None, "expires": 0.0, "data": None}
 DEFAULT_NOTIFY_TEXT_MAX_CHARS = int(os.getenv("NOTIFY_TEXT_MAX_CHARS", "4000"))
-APP_VERSION = "0.3.2"
+APP_VERSION = "0.3.3"
 FORBIDDEN_BUTTON_LABELS = (
     "Speak Last",
     "Assist Input",
@@ -71,7 +71,7 @@ class Settings(BaseModel):
     assist_enabled: bool = False
     assist_agent_id: str = ""
     assist_language: str = ""
-    notify_webhook_id: str = "velox_funis_webhook"
+    notify_webhook_id: str = "lentus_agent_webhook"
     notify_text_max_chars: int = DEFAULT_NOTIFY_TEXT_MAX_CHARS
 
 
