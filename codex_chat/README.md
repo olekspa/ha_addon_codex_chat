@@ -58,7 +58,13 @@ Recommended HA automation for that webhook:
 - Trigger: Webhook (`lentus_agent_webhook`, POST)
 - Action 1: `notify.mobile_app_<your_phone>`
 - Action 2 (optional fallback): `persistent_notification.create`
-- Notification message template: `{{ trigger.json.message | default('No message') }}`
+- Notification templates:
+  - `title`: `{{ trigger.json.title | default('Lentus') }}`
+  - `message`: `{{ trigger.json.message | default('No message') }}`
+  - `data.url`: `{{ trigger.json.data.url | default('') }}`
+  - `data.clickAction`: `{{ trigger.json.data.clickAction | default('') }}`
+  - `data.uri`: `{{ trigger.json.data.uri | default('') }}`
+  - Optional action button URI: set action to `URI` and use `{{ trigger.json.data.thread_url | default('') }}`
 
 Mom-targeted variant:
 - Create webhook automation `lentus_agent_webhook2` with the same message template.
@@ -86,7 +92,7 @@ python3 relay/codex_relay.py --host 0.0.0.0 --port 8765
 The add-on uses:
 - `image: ghcr.io/olekspa/{arch}-codex_chat`
 
-So version `0.3.2` must exist as image tags:
-- `ghcr.io/olekspa/amd64-codex_chat:0.3.2`
-- `ghcr.io/olekspa/aarch64-codex_chat:0.3.2`
-- `ghcr.io/olekspa/armv7-codex_chat:0.3.2`
+So version `0.3.8` must exist as image tags:
+- `ghcr.io/olekspa/amd64-codex_chat:0.3.8`
+- `ghcr.io/olekspa/aarch64-codex_chat:0.3.8`
+- `ghcr.io/olekspa/armv7-codex_chat:0.3.8`

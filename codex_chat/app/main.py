@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 OPTIONS_PATH = Path("/data/options.json")
@@ -25,7 +25,7 @@ THREADS_CACHE_TTL_S = 2.5
 THREADS_CACHE_LOCK = threading.Lock()
 THREADS_CACHE: dict[str, Any] = {"key": None, "expires": 0.0, "data": None}
 DEFAULT_NOTIFY_TEXT_MAX_CHARS = int(os.getenv("NOTIFY_TEXT_MAX_CHARS", "4000"))
-APP_VERSION = "0.3.6"
+APP_VERSION = "0.3.8"
 FORBIDDEN_BUTTON_LABELS = (
     "Speak Last",
     "Assist Input",
@@ -381,6 +381,14 @@ async def relay_post(path: str, body: dict[str, Any], params: dict[str, Any] | N
     return resp.json()
 
 
+def _sse_event_line(event: str, payload: dict[str, Any]) -> str:
+    serialized = json.dumps(payload, ensure_ascii=True)
+    lines = [f"event: {event}"]
+    for line in serialized.splitlines() or ["{}"]:
+        lines.append(f"data: {line}")
+    return "\n".join(lines) + "\n\n"
+
+
 @app.get("/api/health")
 async def api_health() -> dict[str, Any]:
     settings = load_settings()
@@ -626,6 +634,66 @@ async def api_thread_read(thread_id: str, includeTurns: bool = True) -> dict[str
                 thread["turns"] = []
             return result
         raise
+
+
+@app.get("/api/threads/{thread_id}/events")
+async def api_thread_events(
+    thread_id: str,
+    timeout: int = Query(default=300, ge=5, le=3600),
+    heartbeat: int = Query(default=15, ge=2, le=60),
+    turnId: str | None = None,
+) -> StreamingResponse:
+    settings = load_settings()
+    url = f"{relay_base_url(settings)}/threads/{thread_id}/events"
+    params: dict[str, Any] = {
+        "timeout": str(timeout),
+        "heartbeat": str(heartbeat),
+    }
+    if turnId:
+        params["turnId"] = turnId
+
+    base_headers = relay_headers(settings)
+    base_headers.pop("Content-Type", None)
+    base_headers["Accept"] = "text/event-stream"
+
+    async def stream() -> Any:
+        async with httpx.AsyncClient(timeout=None) as client:
+            try:
+                async with client.stream("GET", url, headers=base_headers, params=params) as resp:
+                    if resp.status_code >= 400:
+                        body = await resp.aread()
+                        detail = body.decode("utf-8", errors="replace")[:400]
+                        yield _sse_event_line(
+                            "relay_error",
+                            {
+                                "error": "relay_sse_non_2xx",
+                                "status": resp.status_code,
+                                "detail": detail,
+                            },
+                        )
+                        return
+                    async for line in resp.aiter_lines():
+                        if line is None:
+                            continue
+                        yield f"{line}\n"
+            except Exception as exc:
+                yield _sse_event_line(
+                    "relay_error",
+                    {
+                        "error": "relay_sse_proxy_failed",
+                        "exception": type(exc).__name__,
+                        "message": str(exc),
+                    },
+                )
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @app.post("/api/threads/start")
