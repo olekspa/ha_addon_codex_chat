@@ -92,7 +92,7 @@ python3 relay/codex_relay.py --host 0.0.0.0 --port 8765
 The add-on uses:
 - `image: ghcr.io/olekspa/{arch}-codex_chat`
 
-So version `0.3.8` must exist as image tags:
-- `ghcr.io/olekspa/amd64-codex_chat:0.3.8`
-- `ghcr.io/olekspa/aarch64-codex_chat:0.3.8`
-- `ghcr.io/olekspa/armv7-codex_chat:0.3.8`
+So version `0.3.9` must exist as image tags:
+- `ghcr.io/olekspa/amd64-codex_chat:0.3.9`
+- `ghcr.io/olekspa/aarch64-codex_chat:0.3.9`
+- `ghcr.io/olekspa/armv7-codex_chat:0.3.9`

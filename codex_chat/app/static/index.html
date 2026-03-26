@@ -1186,30 +1186,52 @@
         return raw;
       }
     }
+    function threadIdFromHash(rawHashValue) {
+      const rawHash = String(rawHashValue || '').replace(/^#/, '').trim();
+      if (!rawHash) return '';
+
+      const queryIndex = rawHash.indexOf('?');
+      if (queryIndex >= 0) {
+        const hashParams = new URLSearchParams(rawHash.slice(queryIndex + 1));
+        const fromHashQuery = decodeThreadToken(hashParams.get('thread_id') || hashParams.get('threadId') || '');
+        if (fromHashQuery) return fromHashQuery;
+      }
+
+      const hashParams = new URLSearchParams(rawHash);
+      const fromHashFlat = decodeThreadToken(hashParams.get('thread_id') || hashParams.get('threadId') || '');
+      if (fromHashFlat) return fromHashFlat;
+
+      const hashPathMatch = rawHash.match(/(?:^|\/)thread\/([^/?#]+)/i);
+      if (hashPathMatch && hashPathMatch[1]) {
+        return decodeThreadToken(hashPathMatch[1]);
+      }
+      return '';
+    }
     function threadIdFromLocation() {
       try {
         const params = new URLSearchParams(window.location.search || '');
         const fromQuery = decodeThreadToken(params.get('thread_id') || params.get('threadId') || '');
         if (fromQuery) return fromQuery;
 
-        const rawHash = String(window.location.hash || '').replace(/^#/, '').trim();
-        if (!rawHash) return '';
+        // HA ingress opens this app inside an iframe and strips iframe query params.
+        // In that flow, thread_id survives in the parent URL, exposed as referrer.
+        const rawReferrer = String(document.referrer || '').trim();
+        if (rawReferrer) {
+          try {
+            const ref = new URL(rawReferrer);
+            const refParams = new URLSearchParams(ref.search || '');
+            const fromRefQuery = decodeThreadToken(refParams.get('thread_id') || refParams.get('threadId') || '');
+            if (fromRefQuery) return fromRefQuery;
 
-        const queryIndex = rawHash.indexOf('?');
-        if (queryIndex >= 0) {
-          const hashParams = new URLSearchParams(rawHash.slice(queryIndex + 1));
-          const fromHashQuery = decodeThreadToken(hashParams.get('thread_id') || hashParams.get('threadId') || '');
-          if (fromHashQuery) return fromHashQuery;
+            const fromRefHash = threadIdFromHash(ref.hash || '');
+            if (fromRefHash) return fromRefHash;
+          } catch (_err) {
+            // Ignore malformed referrer values.
+          }
         }
 
-        const hashParams = new URLSearchParams(rawHash);
-        const fromHashFlat = decodeThreadToken(hashParams.get('thread_id') || hashParams.get('threadId') || '');
-        if (fromHashFlat) return fromHashFlat;
-
-        const hashPathMatch = rawHash.match(/(?:^|\/)thread\/([^/?#]+)/i);
-        if (hashPathMatch && hashPathMatch[1]) {
-          return decodeThreadToken(hashPathMatch[1]);
-        }
+        const fromWindowHash = threadIdFromHash(window.location.hash || '');
+        if (fromWindowHash) return fromWindowHash;
       } catch (_err) {
         return '';
       }
