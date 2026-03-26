@@ -481,6 +481,9 @@
         media_player_entity_id: '',
       },
     };
+    const ACTIVE_TURN_POLL_MS = 1000;
+    const ACTIVE_TURN_MAX_SECONDS = 15 * 60;
+    const MAX_TRANSIENT_POLL_ERRORS = 6;
 
     function setStatus(text, isError = false) {
       el.status.textContent = text;
@@ -532,6 +535,94 @@
         }
       }
       return String(value || 'Unknown error');
+    }
+
+    function sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    function normalizeTurnStatus(status) {
+      return String(status || '').trim().toLowerCase();
+    }
+
+    function isTerminalTurnStatus(status) {
+      const s = normalizeTurnStatus(status);
+      return s === 'completed' || s === 'failed' || s === 'error' || s === 'cancelled' || s === 'canceled';
+    }
+
+    function getTurnById(threadData, turnId) {
+      const turns = threadData?.thread?.turns;
+      if (!Array.isArray(turns) || !turnId) return null;
+      for (const turn of turns) {
+        if (turn && turn.id === turnId) return turn;
+      }
+      return null;
+    }
+
+    function countAgentMessages(turn) {
+      const items = Array.isArray(turn?.items) ? turn.items : [];
+      let count = 0;
+      for (const item of items) {
+        if (item?.type === 'agentMessage') count += 1;
+      }
+      return count;
+    }
+
+    function threadRenderSignature(threadData) {
+      const turns = threadData?.thread?.turns;
+      if (!Array.isArray(turns)) return '';
+      const parts = [];
+      for (const turn of turns) {
+        if (!turn || typeof turn !== 'object') continue;
+        const items = Array.isArray(turn.items) ? turn.items : [];
+        const last = items.length ? items[items.length - 1] : null;
+        const lastId = last && typeof last === 'object' ? String(last.id || '') : '';
+        parts.push(`${String(turn.id || '')}:${String(turn.status || '')}:${items.length}:${lastId}`);
+      }
+      return parts.join('|');
+    }
+
+    async function monitorTurnProgress(threadId, turnId) {
+      const startedAt = Date.now();
+      let lastSig = '';
+      let transientErrors = 0;
+
+      while (true) {
+        const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+        if (elapsed > ACTIVE_TURN_MAX_SECONDS) {
+          throw new Error(`Turn is still running after ${ACTIVE_TURN_MAX_SECONDS}s. It may still complete in background.`);
+        }
+
+        try {
+          const data = await api(`./api/threads/${threadId}?includeTurns=true`);
+          transientErrors = 0;
+          const sig = threadRenderSignature(data);
+          if (sig !== lastSig) {
+            renderThreadMessages(data);
+            lastSig = sig;
+          }
+
+          const turn = getTurnById(data, turnId);
+          if (turn) {
+            const status = normalizeTurnStatus(turn.status) || 'in_progress';
+            const agentCount = countAgentMessages(turn);
+            if (isTerminalTurnStatus(status)) {
+              return data;
+            }
+            setStatus(`Running (${elapsed}s) • ${status}${agentCount ? ` • ${agentCount} update(s)` : ''}`);
+          } else {
+            setStatus(`Turn queued (${elapsed}s)...`);
+          }
+        } catch (err) {
+          transientErrors += 1;
+          if (transientErrors > MAX_TRANSIENT_POLL_ERRORS) {
+            throw err;
+          }
+          setStatus(`Temporary connection issue (${transientErrors}/${MAX_TRANSIENT_POLL_ERRORS}), retrying...`);
+        }
+
+        await sleep(ACTIVE_TURN_POLL_MS);
+      }
     }
 
     function renderThreads() {
@@ -784,10 +875,22 @@
 
         const out = await api(`./api/threads/${state.selectedThreadId}/turns`, {
           method: 'POST',
-          body: JSON.stringify({ text, wait: true }),
+          body: JSON.stringify({ text, wait: false }),
         });
 
-        const read = out.threadRead || out;
+        const turnId = out?.turn?.id || null;
+        let read = out?.threadRead || null;
+        if (read) {
+          renderThreadMessages(read);
+        }
+        if (turnId) {
+          read = await monitorTurnProgress(state.selectedThreadId, turnId);
+        } else {
+          read = await api(`./api/threads/${state.selectedThreadId}?includeTurns=true`);
+          renderThreadMessages(read);
+        }
+
+        read = read || await api(`./api/threads/${state.selectedThreadId}?includeTurns=true`);
         renderThreadMessages(read);
         if (el.ttsAutoToggle.checked) {
           const lastAgent = extractLastAgentText(read);
