@@ -1,4 +1,4 @@
-"""Config flow for Funis conversation integration."""
+"""Config flow for Lentus conversation integration."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ async def _validate_relay(
 
 
 class FunisConversationConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Funis conversation."""
+    """Handle a config flow for Lentus conversation."""
 
     VERSION = 1
 
@@ -76,7 +76,7 @@ class FunisConversationConfigFlow(ConfigFlow, domain=DOMAIN):
         if errors:
             return self.async_show_form(step_id="user", data_schema=_schema(user_input), errors=errors)
 
-        await self.async_set_unique_id("funis_conversation_default")
+        await self.async_set_unique_id("lentus_conversation_default")
         self._abort_if_unique_id_configured()
 
         title = user_input.get(CONF_NAME, DEFAULT_NAME)

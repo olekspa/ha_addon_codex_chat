@@ -25,7 +25,7 @@ THREADS_CACHE_TTL_S = 2.5
 THREADS_CACHE_LOCK = threading.Lock()
 THREADS_CACHE: dict[str, Any] = {"key": None, "expires": 0.0, "data": None}
 DEFAULT_NOTIFY_TEXT_MAX_CHARS = int(os.getenv("NOTIFY_TEXT_MAX_CHARS", "4000"))
-APP_VERSION = "0.3.3"
+APP_VERSION = "0.3.4"
 FORBIDDEN_BUTTON_LABELS = (
     "Speak Last",
     "Assist Input",
@@ -145,7 +145,7 @@ class HaAssistBody(BaseModel):
 
 class HaNotifyBody(BaseModel):
     message: str
-    title: str | None = "Funis"
+    title: str | None = "Lentus"
     level: str | None = "info"
     webhook_id: str | None = None
     data: dict[str, Any] | None = None
@@ -548,7 +548,7 @@ async def api_ha_notify(body: HaNotifyBody) -> dict[str, Any]:
     if not webhook_id:
         raise HTTPException(status_code=400, detail="webhook_id is required")
     payload: dict[str, Any] = {
-        "title": (body.title or "Funis").strip() or "Funis",
+        "title": (body.title or "Lentus").strip() or "Lentus",
         "message": message,
         "level": (body.level or "info").strip() or "info",
     }

@@ -1,4 +1,4 @@
-"""Constants for Funis conversation agent."""
+"""Constants for Lentus conversation agent."""
 
 DOMAIN = "funis_conversation"
 
@@ -12,7 +12,7 @@ CONF_MODEL = "model"
 CONF_APPROVAL_POLICY = "approval_policy"
 CONF_SANDBOX_MODE = "sandbox_mode"
 
-DEFAULT_NAME = "Funis"
+DEFAULT_NAME = "Lentus"
 DEFAULT_RELAY_URL = "http://127.0.0.1:8765"
 DEFAULT_WAIT_TIMEOUT = 120
 DEFAULT_WAIT_POLL = 1.0

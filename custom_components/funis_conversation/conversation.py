@@ -1,4 +1,4 @@
-"""Conversation agent for Funis via Codex relay."""
+"""Conversation agent for Lentus via Codex relay."""
 
 from __future__ import annotations
 
@@ -53,12 +53,12 @@ async def async_setup_entry(
     config_entry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up Funis conversation entity."""
+    """Set up Lentus conversation entity."""
     async_add_entities([FunisConversationAgent(hass, config_entry)])
 
 
 class FunisConversationAgent(ConversationEntity, conversation.AbstractConversationAgent):
-    """Funis-backed conversation agent."""
+    """Lentus-backed conversation agent."""
 
     _attr_has_entity_name = True
 
@@ -96,12 +96,12 @@ class FunisConversationAgent(ConversationEntity, conversation.AbstractConversati
 
         try:
             # First route through HA's built-in conversation agent so exposed-entity
-            # control/intents work natively. Fall back to Funis relay only when HA
+            # control/intents work natively. Fall back to Lentus relay only when HA
             # reports no intent match.
             try:
                 ha_result = await self._ha_builtin_process(user_input, conv_id)
             except Exception as err:
-                _LOGGER.debug("HA built-in routing unavailable, continuing with Funis relay: %s", err)
+                _LOGGER.debug("HA built-in routing unavailable, continuing with Lentus relay: %s", err)
                 ha_result = None
             if ha_result is not None:
                 speech = _extract_ha_speech_from_result(ha_result)
@@ -169,10 +169,10 @@ class FunisConversationAgent(ConversationEntity, conversation.AbstractConversati
                 self._last_reply_by_conv[conv_id] = text
             response.async_set_speech(text)
         except Exception as err:
-            _LOGGER.exception("Funis conversation failed")
+            _LOGGER.exception("Lentus conversation failed")
             response.async_set_error(
                 intent.IntentResponseErrorCode.UNKNOWN,
-                f"Funis agent error: {err}",
+                f"Lentus agent error: {err}",
             )
 
         return ConversationResult(
@@ -222,7 +222,7 @@ class FunisConversationAgent(ConversationEntity, conversation.AbstractConversati
         out_conv_id = str(result.get("conversation_id") or conv_id)
         continue_conversation = bool(result.get("continue_conversation", False))
 
-        # Fall back to Funis relay only when HA explicitly reports no intent match.
+        # Fall back to Lentus relay only when HA explicitly reports no intent match.
         if response_type == "error":
             data_obj = resp_obj.get("data")
             code = data_obj.get("code") if isinstance(data_obj, dict) else ""

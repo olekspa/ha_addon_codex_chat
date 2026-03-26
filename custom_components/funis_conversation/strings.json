@@ -2,8 +2,8 @@
   "config": {
     "step": {
       "user": {
-        "title": "Funis Conversation Agent",
-        "description": "Connect Home Assistant Assist to Funis via Codex relay.",
+        "title": "Lentus Conversation Agent",
+        "description": "Connect Home Assistant Assist to Lentus via Codex relay.",
         "data": {
           "name": "Name",
           "relay_url": "Relay URL",
@@ -23,7 +23,7 @@
       "unknown": "Unexpected error"
     },
     "abort": {
-      "single_instance_allowed": "Only one Funis Conversation Agent is allowed"
+      "single_instance_allowed": "Only one Lentus Conversation Agent is allowed"
     }
   }
 }

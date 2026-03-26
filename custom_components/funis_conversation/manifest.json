@@ -1,6 +1,6 @@
 {
   "domain": "funis_conversation",
-  "name": "Funis Conversation Agent",
+  "name": "Lentus Conversation Agent",
   "version": "0.1.1",
   "documentation": "https://github.com/olekspa/ha_addon_codex_chat",
   "issue_tracker": "https://github.com/olekspa/ha_addon_codex_chat/issues",

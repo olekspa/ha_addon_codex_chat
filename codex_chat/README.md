@@ -13,7 +13,7 @@ Home Assistant add-on that provides a chat UI and backend proxy for a Codex rela
 - Optional Home Assistant TTS for assistant replies (manual + auto-speak).
 - Optional Home Assistant Assist text processing (`conversation.process`) from chat.
 - Optional HA webhook notifications for user push workflows.
-- Compatible with `funis_conversation` custom Assist agent integration (native Assist routing to Funis).
+- Compatible with `funis_conversation` custom Assist agent integration (native Assist routing to Lentus).
 
 ## Add-on Options
 - `relay_url`: Base URL of your relay service, e.g. `http://192.168.1.50:8765`
@@ -28,7 +28,7 @@ Home Assistant add-on that provides a chat UI and backend proxy for a Codex rela
 - `assist_enabled`: Enable auto-send of Codex replies to Assist
 - `assist_agent_id`: Optional Assist agent id override
 - `assist_language`: Optional language override for Assist processing
-- `notify_webhook_id`: Webhook id used by `/api/ha/notify` (default: `velox_funis_webhook`)
+- `notify_webhook_id`: Webhook id used by `/api/ha/notify` (default: `lentus_agent_webhook`)
 
 When `tts_service` is `tts.speak`, set `tts_media_player_entity_id`.
 If your Home Assistant Cloud TTS provider is configured in HA, this add-on will use it via the normal HA service call path.
@@ -41,7 +41,7 @@ Use add-on endpoint:
 Request body:
 ```json
 {
-  "title": "Funis",
+  "title": "Lentus",
   "message": "Build completed",
   "level": "info"
 }
@@ -51,17 +51,17 @@ The add-on posts this payload to:
 - `/api/webhook/<notify_webhook_id>` in Home Assistant Core.
 
 For your setup:
-- `notify_webhook_id = velox_funis_webhook`
+- `notify_webhook_id = lentus_agent_webhook`
 - Status: validated on 2026-02-22 (HTTP 200 and user-confirmed push delivery)
 
 Recommended HA automation for that webhook:
-- Trigger: Webhook (`velox_funis_webhook`, POST)
+- Trigger: Webhook (`lentus_agent_webhook`, POST)
 - Action 1: `notify.mobile_app_<your_phone>`
 - Action 2 (optional fallback): `persistent_notification.create`
 - Notification message template: `{{ trigger.json.message | default('No message') }}`
 
 Mom-targeted variant:
-- Create webhook automation `velox_funis_webhook2` with the same message template.
+- Create webhook automation `lentus_agent_webhook2` with the same message template.
 
 ## Relay Requirements
 Relay should run on LAN host:

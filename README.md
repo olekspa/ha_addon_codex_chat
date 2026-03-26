@@ -6,7 +6,7 @@ This repository contains a Home Assistant add-on that provides a chat UI and thr
 - `codex_chat`: Chat frontend + backend proxy to `relay/codex_relay.py`
 
 ## Custom Integration
-- `custom_components/funis_conversation`: Home Assistant Conversation Agent so Assist can route to Funis/Codex relay.
+- `custom_components/funis_conversation`: Home Assistant Conversation Agent so Assist can route to Lentus/Codex relay.
 
 ## Install in Home Assistant
 1. Push this repository to GitHub.
@@ -43,16 +43,16 @@ Then set add-on options:
 - `relay_url`: `http://<relay-host>:8765`
 - `relay_token`: same token
 
-## Install Funis Assist Agent (custom component)
+## Install Lentus Assist Agent (custom component)
 1. Copy `custom_components/funis_conversation` into your Home Assistant config:
    - `<ha_config>/custom_components/funis_conversation`
 2. Restart Home Assistant.
 3. Go to **Settings -> Devices & Services -> Add Integration**.
-4. Add **Funis Conversation Agent**.
+4. Add **Lentus Conversation Agent**.
 5. Fill relay settings (`relay_url`, `relay_token`) and keep defaults for:
    - `approval_policy=never`
    - `sandbox_mode=danger-full-access`
-6. Go to **Settings -> Voice assistants -> Assist** and select the Funis agent as default.
+6. Go to **Settings -> Voice assistants -> Assist** and select the Lentus agent as default.
 
 ### Shared thread behavior
 - Assist `conversation_id` is mapped to a Codex `threadId` and persisted.
