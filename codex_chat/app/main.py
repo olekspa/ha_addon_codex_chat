@@ -25,7 +25,7 @@ THREADS_CACHE_TTL_S = 2.5
 THREADS_CACHE_LOCK = threading.Lock()
 THREADS_CACHE: dict[str, Any] = {"key": None, "expires": 0.0, "data": None}
 DEFAULT_NOTIFY_TEXT_MAX_CHARS = int(os.getenv("NOTIFY_TEXT_MAX_CHARS", "4000"))
-APP_VERSION = "0.3.4"
+APP_VERSION = "0.3.5"
 FORBIDDEN_BUTTON_LABELS = (
     "Speak Last",
     "Assist Input",

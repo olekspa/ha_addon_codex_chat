@@ -46,7 +46,7 @@ async def _validate_relay(
         raise ValueError(f"Relay health check failed: HTTP {resp.status_code}")
 
 
-class FunisConversationConfigFlow(ConfigFlow, domain=DOMAIN):
+class LentusConversationConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Lentus conversation."""
 
     VERSION = 1

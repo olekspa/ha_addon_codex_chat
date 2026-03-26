@@ -1,6 +1,6 @@
 """Constants for Lentus conversation agent."""
 
-DOMAIN = "funis_conversation"
+DOMAIN = "lentus_conversation"
 
 CONF_NAME = "name"
 CONF_RELAY_URL = "relay_url"

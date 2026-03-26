@@ -54,10 +54,10 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Lentus conversation entity."""
-    async_add_entities([FunisConversationAgent(hass, config_entry)])
+    async_add_entities([LentusConversationAgent(hass, config_entry)])
 
 
-class FunisConversationAgent(ConversationEntity, conversation.AbstractConversationAgent):
+class LentusConversationAgent(ConversationEntity, conversation.AbstractConversationAgent):
     """Lentus-backed conversation agent."""
 
     _attr_has_entity_name = True
