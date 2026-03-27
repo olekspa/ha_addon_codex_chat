@@ -10,9 +10,10 @@ import threading
 import hashlib
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
@@ -25,7 +26,13 @@ THREADS_CACHE_TTL_S = 2.5
 THREADS_CACHE_LOCK = threading.Lock()
 THREADS_CACHE: dict[str, Any] = {"key": None, "expires": 0.0, "data": None}
 DEFAULT_NOTIFY_TEXT_MAX_CHARS = int(os.getenv("NOTIFY_TEXT_MAX_CHARS", "4000"))
-APP_VERSION = "0.3.8"
+APP_VERSION = "0.4.0"
+ROUTE_LENTUS = "lentus"
+ROUTE_MULSUS = "mulsus"
+VALID_ROUTES = {ROUTE_LENTUS, ROUTE_MULSUS}
+PERSON_USER_CACHE_TTL_S = 60.0
+PERSON_USER_CACHE_LOCK = threading.Lock()
+PERSON_USER_CACHE: dict[str, Any] = {"key": None, "expires": 0.0, "data": None}
 FORBIDDEN_BUTTON_LABELS = (
     "Speak Last",
     "Assist Input",
@@ -61,6 +68,12 @@ FORBIDDEN_BUTTON_BY_ID_RE = re.compile(
 class Settings(BaseModel):
     relay_url: str = "http://127.0.0.1:8765"
     relay_token: str = ""
+    mulsus_relay_url: str = ""
+    mulsus_relay_token: str = ""
+    admin_person_entity_id: str = "person.alex"
+    mulsus_person_entity_id: str = "person.tetyana"
+    lentus_agent_label: str = "Lentus"
+    mulsus_agent_label: str = "Mulsus"
     default_wait: bool = True
     wait_timeout: int = 120
     poll_interval: float = 1.0
@@ -88,6 +101,12 @@ def load_settings() -> Settings:
     return Settings(
         relay_url=os.getenv("RELAY_URL", "http://127.0.0.1:8765"),
         relay_token=os.getenv("RELAY_TOKEN", ""),
+        mulsus_relay_url=os.getenv("MULSUS_RELAY_URL", ""),
+        mulsus_relay_token=os.getenv("MULSUS_RELAY_TOKEN", ""),
+        admin_person_entity_id=os.getenv("ADMIN_PERSON_ENTITY_ID", "person.alex"),
+        mulsus_person_entity_id=os.getenv("MULSUS_PERSON_ENTITY_ID", "person.tetyana"),
+        lentus_agent_label=os.getenv("LENTUS_AGENT_LABEL", "Lentus"),
+        mulsus_agent_label=os.getenv("MULSUS_AGENT_LABEL", "Mulsus"),
         default_wait=os.getenv("DEFAULT_WAIT", "true").lower() == "true",
         wait_timeout=int(os.getenv("WAIT_TIMEOUT", "120")),
         poll_interval=float(os.getenv("POLL_INTERVAL", "1.0")),
@@ -151,15 +170,203 @@ class HaNotifyBody(BaseModel):
     data: dict[str, Any] | None = None
 
 
-def relay_headers(settings: Settings) -> dict[str, str]:
+def relay_headers(relay_token: str) -> dict[str, str]:
     headers = {"Content-Type": "application/json"}
-    if settings.relay_token:
-        headers["Authorization"] = f"Bearer {settings.relay_token}"
+    if relay_token:
+        headers["Authorization"] = f"Bearer {relay_token}"
     return headers
 
 
-def relay_base_url(settings: Settings) -> str:
-    return settings.relay_url.rstrip("/")
+def relay_base_url(relay_url: str) -> str:
+    return relay_url.rstrip("/")
+
+
+class RouteContext(BaseModel):
+    key: str
+    label: str
+    relay_url: str
+    relay_token: str
+
+
+class SessionContext(BaseModel):
+    ha_user_id: str
+    ha_user_name: str
+    ha_user_display_name: str
+    allowed_routes: list[str]
+    default_route: str
+
+
+def _first_header(request: Request, *names: str) -> str:
+    for name in names:
+        value = (request.headers.get(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _normalize_route_key(route: str | None) -> str | None:
+    raw = (route or "").strip().lower()
+    if not raw:
+        return None
+    if raw not in VALID_ROUTES:
+        raise HTTPException(status_code=400, detail=f"Invalid route '{route}'. Expected one of: lentus, mulsus")
+    return raw
+
+
+def _route_catalog(settings: Settings) -> dict[str, RouteContext]:
+    return {
+        ROUTE_LENTUS: RouteContext(
+            key=ROUTE_LENTUS,
+            label=(settings.lentus_agent_label or "Lentus").strip() or "Lentus",
+            relay_url=(settings.relay_url or "").strip(),
+            relay_token=(settings.relay_token or "").strip(),
+        ),
+        ROUTE_MULSUS: RouteContext(
+            key=ROUTE_MULSUS,
+            label=(settings.mulsus_agent_label or "Mulsus").strip() or "Mulsus",
+            relay_url=(settings.mulsus_relay_url or "").strip(),
+            relay_token=(settings.mulsus_relay_token or "").strip(),
+        ),
+    }
+
+
+def _configured_routes(settings: Settings) -> set[str]:
+    configured: set[str] = set()
+    for key, route in _route_catalog(settings).items():
+        if route.relay_url:
+            configured.add(key)
+    return configured
+
+
+def _parse_person_entity_id(entity_id: str, *, label: str) -> str:
+    cleaned = (entity_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_]+\.[A-Za-z0-9_]+", cleaned):
+        raise HTTPException(status_code=500, detail=f"Invalid {label} entity id: '{entity_id}'")
+    return cleaned
+
+
+async def ha_get_state(entity_id: str, timeout_s: int) -> dict[str, Any]:
+    url = f"http://supervisor/core/api/states/{quote(entity_id, safe='')}"
+    async with httpx.AsyncClient(timeout=max(10, timeout_s)) as client:
+        try:
+            resp = await client.get(url, headers=supervisor_headers())
+        except Exception as exc:
+            LOG.exception("HA state fetch failed entity_id=%s error=%s", entity_id, type(exc).__name__)
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "Home Assistant state unreachable",
+                    "entity_id": entity_id,
+                    "exception": type(exc).__name__,
+                    "message": str(exc),
+                },
+            ) from exc
+    if resp.status_code >= 400:
+        LOG.warning("HA state fetch non-2xx entity_id=%s status=%s body=%s", entity_id, resp.status_code, resp.text[:400])
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    payload = resp.json()
+    if isinstance(payload, dict) and isinstance(payload.get("attributes"), dict):
+        return payload
+    if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
+        data = payload.get("data")
+        if isinstance(data, dict):
+            return data
+    raise HTTPException(status_code=502, detail=f"Unexpected HA state payload for {entity_id}")
+
+
+def _extract_person_user_id(state: dict[str, Any], *, entity_id: str) -> str:
+    attributes = state.get("attributes")
+    if not isinstance(attributes, dict):
+        raise HTTPException(status_code=500, detail=f"Entity {entity_id} has no attributes map")
+    user_id = str(attributes.get("user_id") or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=500, detail=f"Entity {entity_id} has no attributes.user_id")
+    return user_id
+
+
+async def _resolve_person_user_mapping(settings: Settings) -> dict[str, str]:
+    admin_entity_id = _parse_person_entity_id(settings.admin_person_entity_id, label="admin_person_entity_id")
+    mulsus_entity_id = _parse_person_entity_id(settings.mulsus_person_entity_id, label="mulsus_person_entity_id")
+    cache_key = (admin_entity_id.lower(), mulsus_entity_id.lower())
+    now = time.time()
+    with PERSON_USER_CACHE_LOCK:
+        cached_key = PERSON_USER_CACHE.get("key")
+        cached_exp = float(PERSON_USER_CACHE.get("expires") or 0.0)
+        cached_data = PERSON_USER_CACHE.get("data")
+        if cached_key == cache_key and cached_exp > now and isinstance(cached_data, dict):
+            return dict(cached_data)
+
+    admin_state, mulsus_state = await asyncio.gather(
+        ha_get_state(admin_entity_id, timeout_s=settings.wait_timeout),
+        ha_get_state(mulsus_entity_id, timeout_s=settings.wait_timeout),
+    )
+    mapping = {
+        "admin_user_id": _extract_person_user_id(admin_state, entity_id=admin_entity_id),
+        "mulsus_user_id": _extract_person_user_id(mulsus_state, entity_id=mulsus_entity_id),
+    }
+    with PERSON_USER_CACHE_LOCK:
+        PERSON_USER_CACHE["key"] = cache_key
+        PERSON_USER_CACHE["expires"] = time.time() + PERSON_USER_CACHE_TTL_S
+        PERSON_USER_CACHE["data"] = dict(mapping)
+    return mapping
+
+
+async def resolve_user_session(request: Request, settings: Settings) -> SessionContext:
+    ingress_user_id = _first_header(request, "X-Remote-User-Id")
+    if not ingress_user_id:
+        raise HTTPException(status_code=403, detail="Missing X-Remote-User-Id ingress header")
+
+    ingress_user_name = _first_header(request, "X-Remote-User-Name", "X-Remote-User")
+    ingress_user_display_name = _first_header(request, "X-Remote-User-Display-Name", "X-Remote-User-Name")
+    user_mapping = await _resolve_person_user_mapping(settings)
+    configured_routes = _configured_routes(settings)
+
+    if ingress_user_id == user_mapping["admin_user_id"]:
+        allowed_routes = [route for route in (ROUTE_LENTUS, ROUTE_MULSUS) if route in configured_routes]
+        default_route = ROUTE_LENTUS if ROUTE_LENTUS in allowed_routes else (allowed_routes[0] if allowed_routes else ROUTE_LENTUS)
+    elif ingress_user_id == user_mapping["mulsus_user_id"]:
+        allowed_routes = [ROUTE_MULSUS] if ROUTE_MULSUS in configured_routes else []
+        default_route = ROUTE_MULSUS
+    else:
+        raise HTTPException(status_code=403, detail="User is not mapped to an allowed agent route")
+
+    if not allowed_routes:
+        raise HTTPException(status_code=503, detail="No configured relay routes available for this user")
+
+    return SessionContext(
+        ha_user_id=ingress_user_id,
+        ha_user_name=ingress_user_name,
+        ha_user_display_name=ingress_user_display_name or ingress_user_name or ingress_user_id,
+        allowed_routes=allowed_routes,
+        default_route=default_route,
+    )
+
+
+def resolve_route_context(settings: Settings, session: SessionContext, route: str | None) -> RouteContext:
+    chosen_route = _normalize_route_key(route) or session.default_route
+    if chosen_route not in session.allowed_routes:
+        raise HTTPException(status_code=403, detail=f"Route '{chosen_route}' is not allowed for this user")
+    route_context = _route_catalog(settings).get(chosen_route)
+    if route_context is None:
+        raise HTTPException(status_code=500, detail=f"Unknown route '{chosen_route}'")
+    if not route_context.relay_url:
+        raise HTTPException(status_code=503, detail=f"Route '{chosen_route}' is not configured")
+    return route_context
+
+
+def build_session_payload(session: SessionContext, settings: Settings, effective_route: str) -> dict[str, Any]:
+    route_labels = {key: route.label for key, route in _route_catalog(settings).items()}
+    return {
+        "ok": True,
+        "ha_user_id": session.ha_user_id,
+        "ha_user_name": session.ha_user_name,
+        "ha_user_display_name": session.ha_user_display_name,
+        "allowed_routes": session.allowed_routes,
+        "default_route": session.default_route,
+        "effective_route": effective_route,
+        "route_labels": route_labels,
+        "agent_label": route_labels.get(effective_route, effective_route),
+    }
 
 
 def detail_text(detail: Any) -> str:
@@ -311,27 +518,32 @@ def thread_has_agent_message(thread: dict[str, Any]) -> bool:
     return False
 
 
-async def poll_until_agent_message(thread_id: str, timeout_s: int, poll_s: float) -> dict[str, Any]:
+async def poll_until_agent_message(
+    route_context: RouteContext,
+    thread_id: str,
+    timeout_s: int,
+    poll_s: float,
+) -> dict[str, Any]:
     deadline = time.time() + max(3, timeout_s)
     last_result: dict[str, Any] | None = None
     while time.time() < deadline:
-        result = await relay_get(f"/threads/{thread_id}", params={"includeTurns": "true"})
+        result = await relay_get(route_context, f"/threads/{thread_id}", params={"includeTurns": "true"})
         last_result = result
         thread = extract_thread(result)
         if thread and thread_has_agent_message(thread):
             return result
         await asyncio.sleep(max(0.2, poll_s))
-    return last_result or await relay_get(f"/threads/{thread_id}", params={"includeTurns": "true"})
+    return last_result or await relay_get(route_context, f"/threads/{thread_id}", params={"includeTurns": "true"})
 
 
-async def relay_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+async def relay_get(route_context: RouteContext, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     settings = load_settings()
-    url = f"{relay_base_url(settings)}{path}"
+    url = f"{relay_base_url(route_context.relay_url)}{path}"
     async with httpx.AsyncClient(timeout=settings.wait_timeout + 15) as client:
         try:
             resp = await client.get(
                 url,
-                headers=relay_headers(settings),
+                headers=relay_headers(route_context.relay_token),
                 params=params,
             )
         except Exception as exc:
@@ -352,14 +564,19 @@ async def relay_get(path: str, params: dict[str, Any] | None = None) -> dict[str
     return resp.json()
 
 
-async def relay_post(path: str, body: dict[str, Any], params: dict[str, Any] | None = None) -> dict[str, Any]:
+async def relay_post(
+    route_context: RouteContext,
+    path: str,
+    body: dict[str, Any],
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     settings = load_settings()
-    url = f"{relay_base_url(settings)}{path}"
+    url = f"{relay_base_url(route_context.relay_url)}{path}"
     async with httpx.AsyncClient(timeout=settings.wait_timeout + 30) as client:
         try:
             resp = await client.post(
                 url,
-                headers=relay_headers(settings),
+                headers=relay_headers(route_context.relay_token),
                 params=params,
                 json=body,
             )
@@ -390,14 +607,18 @@ def _sse_event_line(event: str, payload: dict[str, Any]) -> str:
 
 
 @app.get("/api/health")
-async def api_health() -> dict[str, Any]:
+async def api_health(request: Request, route: str | None = Query(default=None)) -> dict[str, Any]:
     settings = load_settings()
-    relay_health = await relay_get("/health")
+    session = await resolve_user_session(request, settings)
+    route_context = resolve_route_context(settings, session, route)
+    relay_health = await relay_get(route_context, "/health")
     return {
         "ok": True,
         "addon": "codex_chat",
         "version": APP_VERSION,
-        "relay_url": settings.relay_url,
+        "route": route_context.key,
+        "agent_label": route_context.label,
+        "relay_url": route_context.relay_url,
         "relay": relay_health,
     }
 
@@ -412,13 +633,22 @@ async def api_version() -> dict[str, Any]:
     }
 
 
-@app.get("/api/diagnostics")
-async def api_diagnostics() -> dict[str, Any]:
+@app.get("/api/session")
+async def api_session(request: Request, route: str | None = Query(default=None)) -> dict[str, Any]:
     settings = load_settings()
-    relay_url = relay_base_url(settings)
-    token_present = bool(settings.relay_token)
+    session = await resolve_user_session(request, settings)
+    route_context = resolve_route_context(settings, session, route)
+    return build_session_payload(session, settings, route_context.key)
+
+
+@app.get("/api/diagnostics")
+async def api_diagnostics(request: Request, route: str | None = Query(default=None)) -> dict[str, Any]:
+    settings = load_settings()
+    session = await resolve_user_session(request, settings)
+    route_context = resolve_route_context(settings, session, route)
+    token_present = bool(route_context.relay_token)
     try:
-        relay = await relay_get("/health")
+        relay = await relay_get(route_context, "/health")
         relay_ok = True
         relay_error = None
     except HTTPException as exc:
@@ -428,7 +658,9 @@ async def api_diagnostics() -> dict[str, Any]:
 
     return {
         "ok": relay_ok,
-        "relay_url": relay_url,
+        "route": route_context.key,
+        "agent_label": route_context.label,
+        "relay_url": relay_base_url(route_context.relay_url),
         "relay_token_present": token_present,
         "wait_timeout": settings.wait_timeout,
         "poll_interval": settings.poll_interval,
@@ -440,14 +672,16 @@ async def api_diagnostics() -> dict[str, Any]:
         "assist_agent_id": settings.assist_agent_id,
         "assist_language": settings.assist_language,
         "notify_webhook_id": settings.notify_webhook_id,
+        "session": build_session_payload(session, settings, route_context.key),
         "relay_health": relay,
         "relay_error": relay_error,
     }
 
 
 @app.get("/api/ha/tts/config")
-async def api_ha_tts_config() -> dict[str, Any]:
+async def api_ha_tts_config(request: Request) -> dict[str, Any]:
     settings = load_settings()
+    await resolve_user_session(request, settings)
     return {
         "enabled": settings.tts_enabled,
         "service": settings.tts_service,
@@ -457,8 +691,9 @@ async def api_ha_tts_config() -> dict[str, Any]:
 
 
 @app.post("/api/ha/tts")
-async def api_ha_tts(body: HaTtsBody) -> dict[str, Any]:
+async def api_ha_tts(request: Request, body: HaTtsBody) -> dict[str, Any]:
     settings = load_settings()
+    await resolve_user_session(request, settings)
     message = (body.message or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
@@ -496,8 +731,9 @@ async def api_ha_tts(body: HaTtsBody) -> dict[str, Any]:
 
 
 @app.get("/api/ha/assist/config")
-async def api_ha_assist_config() -> dict[str, Any]:
+async def api_ha_assist_config(request: Request) -> dict[str, Any]:
     settings = load_settings()
+    await resolve_user_session(request, settings)
     return {
         "enabled": settings.assist_enabled,
         "agent_id": settings.assist_agent_id,
@@ -506,8 +742,9 @@ async def api_ha_assist_config() -> dict[str, Any]:
 
 
 @app.post("/api/ha/assist/process")
-async def api_ha_assist_process(body: HaAssistBody) -> dict[str, Any]:
+async def api_ha_assist_process(request: Request, body: HaAssistBody) -> dict[str, Any]:
     settings = load_settings()
+    await resolve_user_session(request, settings)
     text = (body.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="text is required")
@@ -537,16 +774,18 @@ async def api_ha_assist_process(body: HaAssistBody) -> dict[str, Any]:
 
 
 @app.get("/api/ha/notify/config")
-async def api_ha_notify_config() -> dict[str, Any]:
+async def api_ha_notify_config(request: Request) -> dict[str, Any]:
     settings = load_settings()
+    await resolve_user_session(request, settings)
     return {
         "webhook_id": settings.notify_webhook_id,
     }
 
 
 @app.post("/api/ha/notify")
-async def api_ha_notify(body: HaNotifyBody) -> dict[str, Any]:
+async def api_ha_notify(request: Request, body: HaNotifyBody) -> dict[str, Any]:
     settings = load_settings()
+    await resolve_user_session(request, settings)
     max_chars = max(200, int(settings.notify_text_max_chars))
     message = (body.message or "").strip()
     if not message:
@@ -576,17 +815,48 @@ async def api_ha_notify(body: HaNotifyBody) -> dict[str, Any]:
     }
 
 
+async def thread_read_with_route(
+    route_context: RouteContext,
+    thread_id: str,
+    include_turns: bool,
+) -> dict[str, Any]:
+    try:
+        return await relay_get(route_context, f"/threads/{thread_id}", params={"includeTurns": str(include_turns).lower()})
+    except HTTPException as exc:
+        # New threads may exist but not yet have materialized turn history.
+        text = detail_text(exc.detail)
+        if include_turns and "not materialized yet" in text:
+            result = await relay_get(route_context, f"/threads/{thread_id}", params={"includeTurns": "false"})
+            thread = result.get("thread")
+            if isinstance(thread, dict):
+                thread["turns"] = []
+            return result
+        raise
+
+
 @app.get("/api/threads")
 async def api_threads(
+    request: Request,
+    route: str | None = Query(default=None),
     limit: int = Query(default=30, ge=1, le=200),
     cursor: str | None = None,
     sourceKinds: str | None = "vscode",
     archived: bool | None = None,
     updatedAfter: int | None = None,
 ) -> dict[str, Any]:
+    settings = load_settings()
+    session = await resolve_user_session(request, settings)
+    route_context = resolve_route_context(settings, session, route)
     params: dict[str, Any] = {}
     cache_key = json.dumps(
-        {"limit": limit, "cursor": cursor, "sourceKinds": sourceKinds, "archived": archived},
+        {
+            "userId": session.ha_user_id,
+            "route": route_context.key,
+            "limit": limit,
+            "cursor": cursor,
+            "sourceKinds": sourceKinds,
+            "archived": archived,
+        },
         sort_keys=True,
     )
     now = time.time()
@@ -602,7 +872,7 @@ async def api_threads(
         cached = THREADS_CACHE["data"] if THREADS_CACHE["key"] == cache_key and THREADS_CACHE["expires"] > now else None
 
     if cached is None:
-        data = await relay_get("/threads", params=params)
+        data = await relay_get(route_context, "/threads", params=params)
         with THREADS_CACHE_LOCK:
             THREADS_CACHE["key"] = cache_key
             THREADS_CACHE["expires"] = time.time() + THREADS_CACHE_TTL_S
@@ -621,30 +891,31 @@ async def api_threads(
 
 
 @app.get("/api/threads/{thread_id}")
-async def api_thread_read(thread_id: str, includeTurns: bool = True) -> dict[str, Any]:
-    try:
-        return await relay_get(f"/threads/{thread_id}", params={"includeTurns": str(includeTurns).lower()})
-    except HTTPException as exc:
-        # New threads may exist but not yet have materialized turn history.
-        text = detail_text(exc.detail)
-        if includeTurns and "not materialized yet" in text:
-            result = await relay_get(f"/threads/{thread_id}", params={"includeTurns": "false"})
-            thread = result.get("thread")
-            if isinstance(thread, dict):
-                thread["turns"] = []
-            return result
-        raise
+async def api_thread_read(
+    request: Request,
+    thread_id: str,
+    includeTurns: bool = True,
+    route: str | None = Query(default=None),
+) -> dict[str, Any]:
+    settings = load_settings()
+    session = await resolve_user_session(request, settings)
+    route_context = resolve_route_context(settings, session, route)
+    return await thread_read_with_route(route_context, thread_id=thread_id, include_turns=includeTurns)
 
 
 @app.get("/api/threads/{thread_id}/events")
 async def api_thread_events(
+    request: Request,
     thread_id: str,
+    route: str | None = Query(default=None),
     timeout: int = Query(default=300, ge=5, le=3600),
     heartbeat: int = Query(default=15, ge=2, le=60),
     turnId: str | None = None,
 ) -> StreamingResponse:
     settings = load_settings()
-    url = f"{relay_base_url(settings)}/threads/{thread_id}/events"
+    session = await resolve_user_session(request, settings)
+    route_context = resolve_route_context(settings, session, route)
+    url = f"{relay_base_url(route_context.relay_url)}/threads/{thread_id}/events"
     params: dict[str, Any] = {
         "timeout": str(timeout),
         "heartbeat": str(heartbeat),
@@ -652,7 +923,7 @@ async def api_thread_events(
     if turnId:
         params["turnId"] = turnId
 
-    base_headers = relay_headers(settings)
+    base_headers = relay_headers(route_context.relay_token)
     base_headers.pop("Content-Type", None)
     base_headers["Accept"] = "text/event-stream"
 
@@ -697,38 +968,75 @@ async def api_thread_events(
 
 
 @app.post("/api/threads/start")
-async def api_thread_start(body: ThreadStartBody) -> dict[str, Any]:
+async def api_thread_start(
+    request: Request,
+    body: ThreadStartBody,
+    route: str | None = Query(default=None),
+) -> dict[str, Any]:
+    settings = load_settings()
+    session = await resolve_user_session(request, settings)
+    route_context = resolve_route_context(settings, session, route)
     payload = body.model_dump(exclude_none=True)
-    return await relay_post("/threads/start", payload)
+    return await relay_post(route_context, "/threads/start", payload)
 
 
 @app.post("/api/threads/{thread_id}/resume")
-async def api_thread_resume(thread_id: str, body: ThreadResumeBody) -> dict[str, Any]:
+async def api_thread_resume(
+    request: Request,
+    thread_id: str,
+    body: ThreadResumeBody,
+    route: str | None = Query(default=None),
+) -> dict[str, Any]:
+    settings = load_settings()
+    session = await resolve_user_session(request, settings)
+    route_context = resolve_route_context(settings, session, route)
     payload = body.model_dump(exclude_none=True)
-    return await relay_post(f"/threads/{thread_id}/resume", payload)
+    return await relay_post(route_context, f"/threads/{thread_id}/resume", payload)
 
 
 @app.post("/api/threads/{thread_id}/archive")
-async def api_thread_archive(thread_id: str, body: ThreadArchiveBody) -> dict[str, Any]:
+async def api_thread_archive(
+    request: Request,
+    thread_id: str,
+    body: ThreadArchiveBody,
+    route: str | None = Query(default=None),
+) -> dict[str, Any]:
+    settings = load_settings()
+    session = await resolve_user_session(request, settings)
+    route_context = resolve_route_context(settings, session, route)
     # Use generic rpc endpoint to support archive/unarchive without relay-specific wrappers.
     method = "thread/archive" if body.archived else "thread/unarchive"
-    out = await relay_post("/rpc", {"method": method, "params": {"threadId": thread_id}})
+    out = await relay_post(route_context, "/rpc", {"method": method, "params": {"threadId": thread_id}})
     return out.get("result", out)
 
 
 @app.post("/api/threads/{thread_id}/materialize")
-async def api_thread_materialize(thread_id: str) -> dict[str, Any]:
+async def api_thread_materialize(
+    request: Request,
+    thread_id: str,
+    route: str | None = Query(default=None),
+) -> dict[str, Any]:
+    settings = load_settings()
+    session = await resolve_user_session(request, settings)
+    route_context = resolve_route_context(settings, session, route)
     # Ensure thread exists in current app-server context and returns a stable read shape.
     try:
-        await relay_post(f"/threads/{thread_id}/resume", {})
+        await relay_post(route_context, f"/threads/{thread_id}/resume", {})
     except HTTPException:
         pass
-    return await api_thread_read(thread_id=thread_id, includeTurns=False)
+    return await thread_read_with_route(route_context, thread_id=thread_id, include_turns=False)
 
 
 @app.post("/api/threads/{thread_id}/turns")
-async def api_turn_start(thread_id: str, body: TurnBody) -> dict[str, Any]:
+async def api_turn_start(
+    request: Request,
+    thread_id: str,
+    body: TurnBody,
+    route: str | None = Query(default=None),
+) -> dict[str, Any]:
     settings = load_settings()
+    session = await resolve_user_session(request, settings)
+    route_context = resolve_route_context(settings, session, route)
     wait = settings.default_wait if body.wait is None else body.wait
     wait_timeout = settings.wait_timeout if body.waitTimeout is None else body.waitTimeout
 
@@ -739,18 +1047,18 @@ async def api_turn_start(thread_id: str, body: TurnBody) -> dict[str, Any]:
     }
     # Best-effort resume to materialize thread state in relay before posting a turn.
     try:
-        await relay_post(f"/threads/{thread_id}/resume", {})
+        await relay_post(route_context, f"/threads/{thread_id}/resume", {})
     except HTTPException:
         pass
 
     try:
-        result = await relay_post(f"/threads/{thread_id}/turns", {"text": body.text}, params=params)
+        result = await relay_post(route_context, f"/threads/{thread_id}/turns", {"text": body.text}, params=params)
     except HTTPException as exc:
         # Retry once after resume when relay reports "thread not found".
         text = detail_text(exc.detail)
         if "thread not found" in text:
-            await relay_post(f"/threads/{thread_id}/resume", {})
-            result = await relay_post(f"/threads/{thread_id}/turns", {"text": body.text}, params=params)
+            await relay_post(route_context, f"/threads/{thread_id}/resume", {})
+            result = await relay_post(route_context, f"/threads/{thread_id}/turns", {"text": body.text}, params=params)
         else:
             raise
 
@@ -762,6 +1070,7 @@ async def api_turn_start(thread_id: str, body: TurnBody) -> dict[str, Any]:
         if thread and not thread_has_agent_message(thread):
             try:
                 refreshed = await poll_until_agent_message(
+                    route_context=route_context,
                     thread_id=thread_id,
                     timeout_s=min(wait_timeout, 20),
                     poll_s=settings.poll_interval,
@@ -790,9 +1099,11 @@ async def startup_log() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     settings = load_settings()
     LOG.info(
-        "Codex Chat add-on started relay_url=%s relay_token_present=%s wait_timeout=%s poll_interval=%s",
-        relay_base_url(settings),
+        "Codex Chat add-on started lentus_relay_url=%s lentus_token=%s mulsus_relay_url=%s mulsus_token=%s wait_timeout=%s poll_interval=%s",
+        relay_base_url(settings.relay_url),
         bool(settings.relay_token),
+        relay_base_url(settings.mulsus_relay_url) if settings.mulsus_relay_url else "",
+        bool(settings.mulsus_relay_token),
         settings.wait_timeout,
         settings.poll_interval,
     )

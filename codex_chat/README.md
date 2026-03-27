@@ -7,17 +7,24 @@ Home Assistant add-on that provides a chat UI and backend proxy for a Codex rela
 - Start new threads and resume existing threads.
 - Send chat turns and wait for completion.
 - Keeps relay token server-side (not exposed to browser JS).
+- Per-user route isolation from HA ingress identity.
+- Alex-admin route switching (Lentus/Mulsus) with compact selector.
 - Thread UX: search and quick new-thread creation.
 - Message UX: Enter-to-send, retry failed send, pending/failed states.
 - Performance: short thread-list cache and delta-based polling support.
 - Optional Home Assistant TTS for assistant replies (manual + auto-speak).
 - Optional Home Assistant Assist text processing (`conversation.process`) from chat.
 - Optional HA webhook notifications for user push workflows.
-- Compatible with `lentus_conversation` custom Assist agent integration (native Assist routing to Lentus).
 
 ## Add-on Options
-- `relay_url`: Base URL of your relay service, e.g. `http://192.168.1.50:8765`
-- `relay_token`: Bearer token configured in relay (`CODEX_RELAY_TOKEN`)
+- `relay_url`: Lentus relay URL, e.g. `http://192.168.1.50:8765`
+- `relay_token`: Lentus relay bearer token (`CODEX_RELAY_TOKEN`)
+- `mulsus_relay_url`: Mulsus relay URL, e.g. `http://192.168.1.10:8765`
+- `mulsus_relay_token`: Mulsus relay bearer token
+- `admin_person_entity_id`: Admin person entity allowed to switch routes (default: `person.alex`)
+- `mulsus_person_entity_id`: Person entity pinned to Mulsus route (default: `person.tetyana`)
+- `lentus_agent_label`: UI label for Lentus route (default: `Lentus`)
+- `mulsus_agent_label`: UI label for Mulsus route (default: `Mulsus`)
 - `default_wait`: Wait for turn completion before returning response
 - `wait_timeout`: Max wait seconds for turn completion
 - `poll_interval`: Poll interval when waiting for turn completion
@@ -33,6 +40,17 @@ Home Assistant add-on that provides a chat UI and backend proxy for a Codex rela
 When `tts_service` is `tts.speak`, set `tts_media_player_entity_id`.
 If your Home Assistant Cloud TTS provider is configured in HA, this add-on will use it via the normal HA service call path.
 Assist integration uses Home Assistant `conversation.process` service through the Supervisor Core API.
+
+## Multi-user route policy
+- Routing is derived from ingress header `X-Remote-User-Id` and person entity `attributes.user_id`.
+- `admin_person_entity_id` user:
+  - Can select either route in UI.
+  - Defaults to Lentus on page load.
+- `mulsus_person_entity_id` user:
+  - Is pinned to Mulsus only.
+  - Does not see the route selector.
+- Unmapped users receive `403` on API calls.
+- UI intentionally does not display model name yet (no reliable resolved model in current thread payloads).
 
 ## Webhook notifications
 Use add-on endpoint:
@@ -92,7 +110,7 @@ python3 relay/codex_relay.py --host 0.0.0.0 --port 8765
 The add-on uses:
 - `image: ghcr.io/olekspa/{arch}-codex_chat`
 
-So version `0.3.9` must exist as image tags:
-- `ghcr.io/olekspa/amd64-codex_chat:0.3.9`
-- `ghcr.io/olekspa/aarch64-codex_chat:0.3.9`
-- `ghcr.io/olekspa/armv7-codex_chat:0.3.9`
+So version `0.4.0` must exist as image tags:
+- `ghcr.io/olekspa/amd64-codex_chat:0.4.0`
+- `ghcr.io/olekspa/aarch64-codex_chat:0.4.0`
+- `ghcr.io/olekspa/armv7-codex_chat:0.4.0`

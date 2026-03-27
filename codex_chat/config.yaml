@@ -1,5 +1,5 @@
 name: Codex Chat
-version: 0.3.9
+version: 0.4.0
 slug: codex_chat
 description: Chat with Codex relay from Home Assistant (threads, history, resume, turns).
 url: https://github.com/olekspa/ha_addon_codex_chat
@@ -20,6 +20,12 @@ ports_description: {}
 options:
   relay_url: "http://192.168.1.100:8765"
   relay_token: ""
+  mulsus_relay_url: "http://192.168.1.10:8765"
+  mulsus_relay_token: ""
+  admin_person_entity_id: "person.alex"
+  mulsus_person_entity_id: "person.tetyana"
+  lentus_agent_label: "Lentus"
+  mulsus_agent_label: "Mulsus"
   default_wait: true
   wait_timeout: 120
   poll_interval: 1.0
@@ -34,6 +40,12 @@ options:
 schema:
   relay_url: str
   relay_token: password
+  mulsus_relay_url: str
+  mulsus_relay_token: password
+  admin_person_entity_id: str
+  mulsus_person_entity_id: str
+  lentus_agent_label: str
+  mulsus_agent_label: str
   default_wait: bool
   wait_timeout: int(10,900)
   poll_interval: float(0.2,5.0)

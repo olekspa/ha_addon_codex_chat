@@ -238,6 +238,22 @@
     button.secondary { background: #334155; }
     button:disabled { opacity: 0.55; cursor: not-allowed; }
     .status { color: var(--muted); font-size: 12px; }
+    .context-line {
+      color: var(--muted);
+      font-size: 11px;
+      margin-top: 2px;
+      min-height: 14px;
+    }
+    .route-select-wrap {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .route-select-wrap select {
+      min-width: 104px;
+    }
     .error { color: var(--warn); }
     .mobile-only { display: none; }
     .drawer-close {
@@ -291,6 +307,12 @@
       .chat-header .toolbar select,
       .chat-header .toolbar input {
         max-width: 100%;
+      }
+      .route-select-wrap {
+        width: 100%;
+      }
+      .route-select-wrap select {
+        width: 100%;
       }
       .messages {
         padding: 10px;
@@ -362,13 +384,18 @@
     <section class="panel chat">
       <div class="chat-header">
         <div>
-        <div class="title">Codex Chat v__APP_VERSION__</div>
+          <div class="title">Codex Chat v__APP_VERSION__</div>
           <div id="status" class="status">Loading...</div>
+          <div id="sessionContext" class="context-line"></div>
         </div>
         <div class="toolbar">
           <button id="openThreadsBtn" class="secondary mobile-only">Threads</button>
           <button id="mobileActionsBtn" class="secondary mobile-only">Actions</button>
           <div id="headerActions" class="header-actions">
+            <label id="agentRouteWrap" class="route-select-wrap" style="display:none;">
+              <span>Agent</span>
+              <select id="agentRouteSelect"></select>
+            </label>
             <input id="cwdInput" placeholder="cwd (absolute path)" />
             <label><input id="autoRefreshToggle" type="checkbox" checked /> Auto</label>
             <select id="autoRefreshInterval">
@@ -395,6 +422,7 @@
       threads: document.getElementById('threads'),
       messages: document.getElementById('messages'),
       status: document.getElementById('status'),
+      sessionContext: document.getElementById('sessionContext'),
       input: document.getElementById('input'),
       refreshBtn: document.getElementById('refreshBtn'),
       sidebarPanel: document.getElementById('sidebarPanel'),
@@ -411,6 +439,8 @@
       autoRefreshInterval: document.getElementById('autoRefreshInterval'),
       ttsAutoToggle: document.getElementById('ttsAutoToggle'),
       cwdInput: document.getElementById('cwdInput'),
+      agentRouteWrap: document.getElementById('agentRouteWrap'),
+      agentRouteSelect: document.getElementById('agentRouteSelect'),
     };
 
     function isMobileLayout() {
@@ -480,6 +510,15 @@
         entity_id: '',
         media_player_entity_id: '',
       },
+      session: {
+        loaded: false,
+        userDisplayName: '',
+        allowedRoutes: [],
+        defaultRoute: 'lentus',
+        effectiveRoute: 'lentus',
+        routeLabels: {},
+      },
+      activeRoute: 'lentus',
     };
     const ACTIVE_TURN_POLL_MS = 1000;
     const ACTIVE_TURN_MAX_SECONDS = 15 * 60;
@@ -539,6 +578,69 @@
       return String(value || 'Unknown error');
     }
 
+    function withRoute(path, routeOverride = null) {
+      const safePath = path.startsWith('/') ? `.${path}` : path;
+      const route = (routeOverride || state.activeRoute || '').trim();
+      if (!route) return safePath;
+      const sep = safePath.includes('?') ? '&' : '?';
+      return `${safePath}${sep}route=${encodeURIComponent(route)}`;
+    }
+
+    function agentLabelFor(routeKey) {
+      return state.session.routeLabels?.[routeKey] || routeKey || '';
+    }
+
+    function renderSessionContext() {
+      const user = (state.session.userDisplayName || '').trim();
+      const agent = agentLabelFor(state.activeRoute);
+      const text = [user, agent].filter(Boolean).join(' · ');
+      el.sessionContext.textContent = text;
+    }
+
+    function applySession(sessionData) {
+      const allowedRoutes = Array.isArray(sessionData?.allowed_routes)
+        ? sessionData.allowed_routes.map((v) => String(v || '').trim()).filter(Boolean)
+        : [];
+      const routeLabels = sessionData?.route_labels && typeof sessionData.route_labels === 'object'
+        ? sessionData.route_labels
+        : {};
+      const defaultRoute = String(sessionData?.default_route || '').trim() || 'lentus';
+      const effectiveRoute = String(sessionData?.effective_route || '').trim() || defaultRoute;
+
+      state.session = {
+        loaded: true,
+        userDisplayName: String(sessionData?.ha_user_display_name || sessionData?.ha_user_name || sessionData?.ha_user_id || ''),
+        allowedRoutes,
+        defaultRoute,
+        effectiveRoute,
+        routeLabels,
+      };
+      state.activeRoute = effectiveRoute;
+
+      if (allowedRoutes.length > 1) {
+        el.agentRouteWrap.style.display = 'inline-flex';
+        el.agentRouteSelect.innerHTML = '';
+        for (const route of allowedRoutes) {
+          const opt = document.createElement('option');
+          opt.value = route;
+          opt.textContent = agentLabelFor(route);
+          el.agentRouteSelect.appendChild(opt);
+        }
+        el.agentRouteSelect.value = state.activeRoute;
+      } else {
+        el.agentRouteWrap.style.display = 'none';
+        el.agentRouteSelect.innerHTML = '';
+      }
+      renderSessionContext();
+    }
+
+    async function loadSession(routeOverride = null) {
+      const path = routeOverride ? `./api/session?route=${encodeURIComponent(routeOverride)}` : './api/session';
+      const session = await api(path);
+      applySession(session);
+      return session;
+    }
+
     function sleep(ms) {
       return new Promise((resolve) => setTimeout(resolve, ms));
     }
@@ -596,7 +698,7 @@
         }
 
         try {
-          const data = await api(`./api/threads/${threadId}?includeTurns=true`);
+          const data = await api(withRoute(`./api/threads/${threadId}?includeTurns=true`));
           transientErrors = 0;
           const sig = threadRenderSignature(data);
           if (sig !== lastSig) {
@@ -675,7 +777,7 @@
 
         refreshInFlight = true;
         try {
-          const data = await api(`./api/threads/${threadId}?includeTurns=true`);
+          const data = await api(withRoute(`./api/threads/${threadId}?includeTurns=true`));
           transientErrors = 0;
           const sig = threadRenderSignature(data);
           if (sig !== lastSig) {
@@ -716,7 +818,7 @@
         });
         if (turnId) qp.set('turnId', turnId);
 
-        eventSource = new EventSource(`./api/threads/${encodeURIComponent(threadId)}/events?${qp.toString()}`);
+        eventSource = new EventSource(withRoute(`./api/threads/${encodeURIComponent(threadId)}/events?${qp.toString()}`));
         eventSource.addEventListener('ready', () => {
           setStatus('Streaming connected');
           scheduleRefresh(0);
@@ -964,28 +1066,62 @@
       }
     }
 
+    function alternateRoutes(currentRoute) {
+      const allowed = Array.isArray(state.session.allowedRoutes) ? state.session.allowedRoutes : [];
+      return allowed.filter((route) => route !== currentRoute);
+    }
+
+    async function tryMaterializeThreadInRoute(threadId, routeKey) {
+      try {
+        await api(withRoute(`./api/threads/${threadId}/materialize`, routeKey), { method: 'POST' });
+        return true;
+      } catch (_err) {
+        return false;
+      }
+    }
+
     async function loadThreads() {
-      setStatus('Loading threads...');
+      setStatus(`Loading threads (${agentLabelFor(state.activeRoute)})...`);
       const cwd = getConfiguredCwd();
       const suffix = cwd ? `&cwd=${encodeURIComponent(cwd)}` : '';
-      const fetchThreads = async () => {
-        const data = await api(`./api/threads?limit=50&sourceKinds=vscode${suffix}`);
+      const fetchThreads = async (routeOverride = null) => {
+        const data = await api(withRoute(`./api/threads?limit=50&sourceKinds=vscode${suffix}`, routeOverride));
         state.threads = data.data || [];
       };
       await fetchThreads();
       if (state.requestedThreadId) {
         const exists = state.threads.some((t) => t.id === state.requestedThreadId);
         if (!exists) {
-          try {
-            await api(`./api/threads/${state.requestedThreadId}/materialize`, { method: 'POST' });
-            await fetchThreads();
-          } catch (_err) {
-            // If materialization fails, continue with default selection behavior.
+          const materializedCurrent = await tryMaterializeThreadInRoute(state.requestedThreadId, state.activeRoute);
+          if (materializedCurrent) {
+            await fetchThreads(state.activeRoute);
+          } else {
+            let switched = false;
+            for (const altRoute of alternateRoutes(state.activeRoute)) {
+              const materializedAlt = await tryMaterializeThreadInRoute(state.requestedThreadId, altRoute);
+              if (!materializedAlt) continue;
+              state.activeRoute = altRoute;
+              if (el.agentRouteSelect && el.agentRouteSelect.value !== altRoute) {
+                el.agentRouteSelect.value = altRoute;
+              }
+              renderSessionContext();
+              await fetchThreads(altRoute);
+              switched = true;
+              break;
+            }
+            if (!switched) {
+              // No matching route found for the requested deep-link thread.
+              setStatus('Requested thread was not found in your allowed routes.');
+            }
           }
         }
         if (state.threads.some((t) => t.id === state.requestedThreadId)) {
           state.selectedThreadId = state.requestedThreadId;
         }
+        state.requestedThreadId = null;
+      }
+      if (state.selectedThreadId && !state.threads.some((t) => t.id === state.selectedThreadId)) {
+        state.selectedThreadId = null;
       }
       state.lastThreadUpdatedAt = state.threads.reduce((m, t) => Math.max(m, t.updatedAt || 0), 0);
       if (!state.selectedThreadId && state.threads.length) {
@@ -995,13 +1131,13 @@
       if (state.selectedThreadId) {
         await loadThread(state.selectedThreadId);
       } else {
-        setStatus('No threads found. Create a new thread.');
+        setStatus(`No threads found for ${agentLabelFor(state.activeRoute)}. Create a new thread.`);
       }
     }
 
     async function loadThread(threadId, silent = false) {
       if (!silent) setStatus('Loading thread...');
-      const data = await api(`./api/threads/${threadId}?includeTurns=true`);
+      const data = await api(withRoute(`./api/threads/${threadId}?includeTurns=true`));
       renderThreadMessages(data);
       const found = state.threads.find(t => t.id === threadId);
       if (found && found.updatedAt) state.lastThreadUpdatedAt = Math.max(state.lastThreadUpdatedAt, found.updatedAt);
@@ -1011,7 +1147,7 @@
     async function createThread() {
       setStatus('Creating thread...');
       const cwd = getConfiguredCwd();
-      const data = await api('./api/threads/start', {
+      const data = await api(withRoute('./api/threads/start'), {
         method: 'POST',
         body: JSON.stringify({
           approvalPolicy: 'never',
@@ -1029,7 +1165,7 @@
       if (!state.selectedThreadId) return;
       setStatus('Resuming thread...');
       const cwd = getConfiguredCwd();
-      await api(`./api/threads/${state.selectedThreadId}/resume`, {
+      await api(withRoute(`./api/threads/${state.selectedThreadId}/resume`), {
         method: 'POST',
         body: JSON.stringify({ cwd: cwd || undefined }),
       });
@@ -1052,7 +1188,7 @@
         el.input.value = '';
         setStatus('Sending...');
 
-        const out = await api(`./api/threads/${state.selectedThreadId}/turns`, {
+        const out = await api(withRoute(`./api/threads/${state.selectedThreadId}/turns`), {
           method: 'POST',
           body: JSON.stringify({ text, wait: false }),
         });
@@ -1065,11 +1201,11 @@
         if (turnId) {
           read = await monitorTurnProgress(state.selectedThreadId, turnId);
         } else {
-          read = await api(`./api/threads/${state.selectedThreadId}?includeTurns=true`);
+          read = await api(withRoute(`./api/threads/${state.selectedThreadId}?includeTurns=true`));
           renderThreadMessages(read);
         }
 
-        read = read || await api(`./api/threads/${state.selectedThreadId}?includeTurns=true`);
+        read = read || await api(withRoute(`./api/threads/${state.selectedThreadId}?includeTurns=true`));
         renderThreadMessages(read);
         if (el.ttsAutoToggle.checked) {
           const lastAgent = extractLastAgentText(read);
@@ -1109,6 +1245,16 @@
     el.closeThreadsBtn.onclick = () => closeThreadMenu();
     el.newThreadBtn.onclick = () => createThread().catch(e => setStatus(String(e), true));
     el.resumeBtn.onclick = () => resumeThread().catch(e => setStatus(String(e), true));
+    el.agentRouteSelect.onchange = async () => {
+      const nextRoute = String(el.agentRouteSelect.value || '').trim();
+      if (!nextRoute || nextRoute === state.activeRoute) return;
+      state.activeRoute = nextRoute;
+      state.selectedThreadId = null;
+      state.lastThreadUpdatedAt = 0;
+      renderSessionContext();
+      await loadThreads();
+      closeMobileActions();
+    };
     el.searchInput.oninput = () => renderThreads();
     el.sendBtn.onclick = () => sendMessage();
     el.retryBtn.onclick = async () => {
@@ -1152,7 +1298,7 @@
         try {
           const cwd = getConfiguredCwd();
           const suffix = cwd ? `&cwd=${encodeURIComponent(cwd)}` : '';
-          const delta = await api(`./api/threads?limit=50&sourceKinds=vscode&updatedAfter=${state.lastThreadUpdatedAt}${suffix}`);
+          const delta = await api(withRoute(`./api/threads?limit=50&sourceKinds=vscode&updatedAfter=${state.lastThreadUpdatedAt}${suffix}`));
           if ((delta.data || []).length > 0) {
             await loadThreads();
             await loadThread(state.selectedThreadId, true);
@@ -1186,52 +1332,30 @@
         return raw;
       }
     }
-    function threadIdFromHash(rawHashValue) {
-      const rawHash = String(rawHashValue || '').replace(/^#/, '').trim();
-      if (!rawHash) return '';
-
-      const queryIndex = rawHash.indexOf('?');
-      if (queryIndex >= 0) {
-        const hashParams = new URLSearchParams(rawHash.slice(queryIndex + 1));
-        const fromHashQuery = decodeThreadToken(hashParams.get('thread_id') || hashParams.get('threadId') || '');
-        if (fromHashQuery) return fromHashQuery;
-      }
-
-      const hashParams = new URLSearchParams(rawHash);
-      const fromHashFlat = decodeThreadToken(hashParams.get('thread_id') || hashParams.get('threadId') || '');
-      if (fromHashFlat) return fromHashFlat;
-
-      const hashPathMatch = rawHash.match(/(?:^|\/)thread\/([^/?#]+)/i);
-      if (hashPathMatch && hashPathMatch[1]) {
-        return decodeThreadToken(hashPathMatch[1]);
-      }
-      return '';
-    }
     function threadIdFromLocation() {
       try {
         const params = new URLSearchParams(window.location.search || '');
         const fromQuery = decodeThreadToken(params.get('thread_id') || params.get('threadId') || '');
         if (fromQuery) return fromQuery;
 
-        // HA ingress opens this app inside an iframe and strips iframe query params.
-        // In that flow, thread_id survives in the parent URL, exposed as referrer.
-        const rawReferrer = String(document.referrer || '').trim();
-        if (rawReferrer) {
-          try {
-            const ref = new URL(rawReferrer);
-            const refParams = new URLSearchParams(ref.search || '');
-            const fromRefQuery = decodeThreadToken(refParams.get('thread_id') || refParams.get('threadId') || '');
-            if (fromRefQuery) return fromRefQuery;
+        const rawHash = String(window.location.hash || '').replace(/^#/, '').trim();
+        if (!rawHash) return '';
 
-            const fromRefHash = threadIdFromHash(ref.hash || '');
-            if (fromRefHash) return fromRefHash;
-          } catch (_err) {
-            // Ignore malformed referrer values.
-          }
+        const queryIndex = rawHash.indexOf('?');
+        if (queryIndex >= 0) {
+          const hashParams = new URLSearchParams(rawHash.slice(queryIndex + 1));
+          const fromHashQuery = decodeThreadToken(hashParams.get('thread_id') || hashParams.get('threadId') || '');
+          if (fromHashQuery) return fromHashQuery;
         }
 
-        const fromWindowHash = threadIdFromHash(window.location.hash || '');
-        if (fromWindowHash) return fromWindowHash;
+        const hashParams = new URLSearchParams(rawHash);
+        const fromHashFlat = decodeThreadToken(hashParams.get('thread_id') || hashParams.get('threadId') || '');
+        if (fromHashFlat) return fromHashFlat;
+
+        const hashPathMatch = rawHash.match(/(?:^|\/)thread\/([^/?#]+)/i);
+        if (hashPathMatch && hashPathMatch[1]) {
+          return decodeThreadToken(hashPathMatch[1]);
+        }
       } catch (_err) {
         return '';
       }
@@ -1254,9 +1378,9 @@
       // Ignore storage failures.
     }
     resetAutoRefreshTimer();
-    Promise.all([loadTtsConfig()]).finally(() => {
-      loadThreads().catch(e => setStatus(String(e), true));
-    });
+    Promise.all([loadTtsConfig(), loadSession()])
+      .then(() => loadThreads())
+      .catch((e) => setStatus(String(e), true));
   </script>
 </body>
 </html>
