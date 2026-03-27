@@ -1,5 +1,5 @@
 name: Codex Chat
-version: 0.4.0
+version: 0.4.1
 slug: codex_chat
 description: Chat with Codex relay from Home Assistant (threads, history, resume, turns).
 url: https://github.com/olekspa/ha_addon_codex_chat
@@ -13,6 +13,7 @@ boot: auto
 init: false
 ingress: true
 ingress_port: 8099
+homeassistant_api: true
 panel_icon: mdi:chat-processing
 panel_title: Codex Chat
 ports: {}

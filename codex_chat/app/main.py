@@ -26,7 +26,7 @@ THREADS_CACHE_TTL_S = 2.5
 THREADS_CACHE_LOCK = threading.Lock()
 THREADS_CACHE: dict[str, Any] = {"key": None, "expires": 0.0, "data": None}
 DEFAULT_NOTIFY_TEXT_MAX_CHARS = int(os.getenv("NOTIFY_TEXT_MAX_CHARS", "4000"))
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.4.1"
 ROUTE_LENTUS = "lentus"
 ROUTE_MULSUS = "mulsus"
 VALID_ROUTES = {ROUTE_LENTUS, ROUTE_MULSUS}
@@ -262,6 +262,21 @@ async def ha_get_state(entity_id: str, timeout_s: int) -> dict[str, Any]:
                 },
             ) from exc
     if resp.status_code >= 400:
+        if resp.status_code == 401:
+            LOG.error(
+                "HA state fetch unauthorized entity_id=%s status=%s body=%s",
+                entity_id,
+                resp.status_code,
+                resp.text[:400],
+            )
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "Home Assistant API unauthorized while resolving per-user routing",
+                    "entity_id": entity_id,
+                    "hint": "Set add-on config `homeassistant_api: true`, then restart the add-on.",
+                },
+            )
         LOG.warning("HA state fetch non-2xx entity_id=%s status=%s body=%s", entity_id, resp.status_code, resp.text[:400])
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
     payload = resp.json()

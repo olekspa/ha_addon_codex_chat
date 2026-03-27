@@ -41,6 +41,10 @@ When `tts_service` is `tts.speak`, set `tts_media_player_entity_id`.
 If your Home Assistant Cloud TTS provider is configured in HA, this add-on will use it via the normal HA service call path.
 Assist integration uses Home Assistant `conversation.process` service through the Supervisor Core API.
 
+## Required add-on permissions
+- `homeassistant_api: true` must be enabled in add-on `config.yaml`.
+- Per-user route mapping reads person entities from Home Assistant Core API; without this permission, `/api/session` can fail with `401 Unauthorized`.
+
 ## Multi-user route policy
 - Routing is derived from ingress header `X-Remote-User-Id` and person entity `attributes.user_id`.
 - `admin_person_entity_id` user:
@@ -110,7 +114,7 @@ python3 relay/codex_relay.py --host 0.0.0.0 --port 8765
 The add-on uses:
 - `image: ghcr.io/olekspa/{arch}-codex_chat`
 
-So version `0.4.0` must exist as image tags:
-- `ghcr.io/olekspa/amd64-codex_chat:0.4.0`
-- `ghcr.io/olekspa/aarch64-codex_chat:0.4.0`
-- `ghcr.io/olekspa/armv7-codex_chat:0.4.0`
+So version `0.4.1` must exist as image tags:
+- `ghcr.io/olekspa/amd64-codex_chat:0.4.1`
+- `ghcr.io/olekspa/aarch64-codex_chat:0.4.1`
+- `ghcr.io/olekspa/armv7-codex_chat:0.4.1`
