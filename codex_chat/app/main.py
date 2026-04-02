@@ -637,31 +637,62 @@ def _collect_dict_nodes(root: Any) -> list[dict[str, Any]]:
 
 
 def _entry_remaining_pct(entry: dict[str, Any]) -> float | None:
-    for key in ("remaining_pct", "remaining_percent", "percent_remaining", "pct_remaining"):
+    for key in (
+        "remaining_pct",
+        "remaining_percent",
+        "percent_remaining",
+        "pct_remaining",
+        "remainingPct",
+        "remainingPercent",
+    ):
         value = _safe_float(entry.get(key))
         if value is not None:
             return max(0.0, min(100.0, value))
     used_pct = _safe_float(entry.get("used_pct"))
     if used_pct is None:
         used_pct = _safe_float(entry.get("used_percent"))
+    if used_pct is None:
+        used_pct = _safe_float(entry.get("usedPct"))
+    if used_pct is None:
+        used_pct = _safe_float(entry.get("usedPercent"))
     if used_pct is not None:
         return max(0.0, min(100.0, 100.0 - used_pct))
     remaining = _safe_float(entry.get("remaining"))
+    if remaining is None:
+        remaining = _safe_float(entry.get("remainingAmount"))
+    if remaining is None:
+        remaining = _safe_float(entry.get("remaining_count"))
     limit = _safe_float(entry.get("limit"))
+    if limit is None:
+        limit = _safe_float(entry.get("max"))
+    if limit is None:
+        limit = _safe_float(entry.get("quota"))
     if remaining is not None and limit is not None and limit > 0:
         return max(0.0, min(100.0, (remaining / limit) * 100.0))
     used = _safe_float(entry.get("used"))
+    if used is None:
+        used = _safe_float(entry.get("usedAmount"))
+    if used is None:
+        used = _safe_float(entry.get("consumed"))
     if used is not None and limit is not None and limit > 0:
         return max(0.0, min(100.0, ((limit - used) / limit) * 100.0))
     return None
 
 
 def _entry_window_name(entry: dict[str, Any]) -> str:
-    for key in ("window", "period", "bucket", "name", "label", "title"):
+    for key in ("window", "period", "bucket", "name", "label", "title", "windowName", "window_name", "interval"):
         value = entry.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip().lower()
     return ""
+
+
+def _entry_window_seconds(entry: dict[str, Any]) -> float | None:
+    for key in ("window_seconds", "windowSeconds", "period_seconds", "periodSeconds", "duration_seconds", "durationSeconds"):
+        value = _safe_float(entry.get(key))
+        if value is not None and value > 0:
+            return value
+    return None
 
 
 def _normalize_usage_limits(payload: dict[str, Any]) -> dict[str, Any]:
@@ -686,7 +717,12 @@ def _normalize_usage_limits(payload: dict[str, Any]) -> dict[str, Any]:
             or ("five" in window and "hour" in window)
         ):
             five_hour_pct = remaining_pct
+        window_seconds = _entry_window_seconds(node)
+        if five_hour_pct is None and window_seconds is not None and abs(window_seconds - (5 * 3600)) <= 60:
+            five_hour_pct = remaining_pct
         if weekly_pct is None and ("week" in window or "weekly" in window):
+            weekly_pct = remaining_pct
+        if weekly_pct is None and window_seconds is not None and abs(window_seconds - (7 * 24 * 3600)) <= 3600:
             weekly_pct = remaining_pct
 
     return {
