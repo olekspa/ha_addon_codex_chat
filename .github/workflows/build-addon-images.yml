@@ -32,9 +32,9 @@ jobs:
       - name: Resolve version from add-on config
         id: version
         run: |
-          VERSION=$(awk -F': ' '/^version:/{print $2}' ha_addon_codex_chat/codex_chat/config.yaml | tr -d '[:space:]')
+          VERSION=$(awk -F': ' '/^version:/{print $2}' codex_chat/config.yaml | tr -d '[:space:]')
           if [ -z "$VERSION" ]; then
-            echo "Failed to parse version from ha_addon_codex_chat/codex_chat/config.yaml" >&2
+            echo "Failed to parse version from codex_chat/config.yaml" >&2
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -65,8 +65,8 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: ./ha_addon_codex_chat/codex_chat
-          file: ./ha_addon_codex_chat/codex_chat/Dockerfile
+          context: ./codex_chat
+          file: ./codex_chat/Dockerfile
           platforms: ${{ matrix.platform }}
           push: true
           tags: |
