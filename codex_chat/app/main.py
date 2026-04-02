@@ -26,7 +26,7 @@ THREADS_CACHE_TTL_S = 2.5
 THREADS_CACHE_LOCK = threading.Lock()
 THREADS_CACHE: dict[str, Any] = {"key": None, "expires": 0.0, "data": None}
 DEFAULT_NOTIFY_TEXT_MAX_CHARS = int(os.getenv("NOTIFY_TEXT_MAX_CHARS", "4000"))
-APP_VERSION = "0.4.1"
+APP_VERSION = "0.4.3"
 ROUTE_LENTUS = "lentus"
 ROUTE_MULSUS = "mulsus"
 VALID_ROUTES = {ROUTE_LENTUS, ROUTE_MULSUS}
@@ -613,6 +613,90 @@ async def relay_post(
     return resp.json()
 
 
+def _safe_float(value: Any) -> float | None:
+    try:
+        out = float(value)
+    except Exception:
+        return None
+    if out != out or out in (float("inf"), float("-inf")):
+        return None
+    return out
+
+
+def _collect_dict_nodes(root: Any) -> list[dict[str, Any]]:
+    nodes: list[dict[str, Any]] = []
+    stack: list[Any] = [root]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, dict):
+            nodes.append(cur)
+            stack.extend(cur.values())
+        elif isinstance(cur, list):
+            stack.extend(cur)
+    return nodes
+
+
+def _entry_remaining_pct(entry: dict[str, Any]) -> float | None:
+    for key in ("remaining_pct", "remaining_percent", "percent_remaining", "pct_remaining"):
+        value = _safe_float(entry.get(key))
+        if value is not None:
+            return max(0.0, min(100.0, value))
+    used_pct = _safe_float(entry.get("used_pct"))
+    if used_pct is None:
+        used_pct = _safe_float(entry.get("used_percent"))
+    if used_pct is not None:
+        return max(0.0, min(100.0, 100.0 - used_pct))
+    remaining = _safe_float(entry.get("remaining"))
+    limit = _safe_float(entry.get("limit"))
+    if remaining is not None and limit is not None and limit > 0:
+        return max(0.0, min(100.0, (remaining / limit) * 100.0))
+    used = _safe_float(entry.get("used"))
+    if used is not None and limit is not None and limit > 0:
+        return max(0.0, min(100.0, ((limit - used) / limit) * 100.0))
+    return None
+
+
+def _entry_window_name(entry: dict[str, Any]) -> str:
+    for key in ("window", "period", "bucket", "name", "label", "title"):
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    return ""
+
+
+def _normalize_usage_limits(payload: dict[str, Any]) -> dict[str, Any]:
+    nodes = _collect_dict_nodes(payload)
+    five_hour_pct: float | None = None
+    weekly_pct: float | None = None
+    updated_at = ""
+
+    for node in nodes:
+        if not updated_at:
+            candidate = node.get("updated_at") or node.get("updatedAt") or node.get("last_updated_at")
+            if isinstance(candidate, str) and candidate.strip():
+                updated_at = candidate.strip()
+        remaining_pct = _entry_remaining_pct(node)
+        if remaining_pct is None:
+            continue
+        window = _entry_window_name(node)
+        if five_hour_pct is None and (
+            "5h" in window
+            or "5-hour" in window
+            or "5 hour" in window
+            or ("five" in window and "hour" in window)
+        ):
+            five_hour_pct = remaining_pct
+        if weekly_pct is None and ("week" in window or "weekly" in window):
+            weekly_pct = remaining_pct
+
+    return {
+        "five_hour_remaining_pct": five_hour_pct,
+        "weekly_remaining_pct": weekly_pct,
+        "updated_at": updated_at,
+        "raw": payload,
+    }
+
+
 def _sse_event_line(event: str, payload: dict[str, Any]) -> str:
     serialized = json.dumps(payload, ensure_ascii=True)
     lines = [f"event: {event}"]
@@ -690,6 +774,33 @@ async def api_diagnostics(request: Request, route: str | None = Query(default=No
         "session": build_session_payload(session, settings, route_context.key),
         "relay_health": relay,
         "relay_error": relay_error,
+    }
+
+
+@app.get("/api/usage/limits")
+async def api_usage_limits(request: Request, route: str | None = Query(default=None)) -> dict[str, Any]:
+    settings = load_settings()
+    session = await resolve_user_session(request, settings)
+    route_context = resolve_route_context(settings, session, route)
+    try:
+        relay_payload = await relay_get(route_context, "/usage/limits")
+    except HTTPException as exc:
+        return {
+            "ok": False,
+            "route": route_context.key,
+            "agent_label": route_context.label,
+            "error": detail_text(exc.detail),
+            "five_hour_remaining_pct": None,
+            "weekly_remaining_pct": None,
+            "updated_at": "",
+        }
+
+    normalized = _normalize_usage_limits(relay_payload if isinstance(relay_payload, dict) else {"value": relay_payload})
+    return {
+        "ok": True,
+        "route": route_context.key,
+        "agent_label": route_context.label,
+        **normalized,
     }
 
 

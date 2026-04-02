@@ -112,9 +112,9 @@ python3 relay/codex_relay.py --host 0.0.0.0 --port 8765
 4. Wait for workflow `Build Add-on Images` to publish GHCR images.
 
 The add-on uses:
-- `image: ghcr.io/olekspa/{arch}-codex_chat`
+- `image: ghcr.io/olekspa/lentus-agent-{arch}-codex_chat`
 
 So version `0.4.1` must exist as image tags:
-- `ghcr.io/olekspa/amd64-codex_chat:0.4.1`
-- `ghcr.io/olekspa/aarch64-codex_chat:0.4.1`
-- `ghcr.io/olekspa/armv7-codex_chat:0.4.1`
+- `ghcr.io/olekspa/lentus-agent-amd64-codex_chat:0.4.3`
+- `ghcr.io/olekspa/lentus-agent-aarch64-codex_chat:0.4.3`
+- `ghcr.io/olekspa/lentus-agent-armv7-codex_chat:0.4.3`

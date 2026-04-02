@@ -22,9 +22,9 @@ git tag v0.4.1
 git push origin v0.4.1
 ```
 4. GitHub Action `.github/workflows/build-addon-images.yml` builds and pushes:
-   - `ghcr.io/<owner>/amd64-codex_chat:0.4.1`
-   - `ghcr.io/<owner>/aarch64-codex_chat:0.4.1`
-   - `ghcr.io/<owner>/armv7-codex_chat:0.4.1`
+   - `ghcr.io/<owner>/lentus-agent-amd64-codex_chat:0.4.3`
+   - `ghcr.io/<owner>/lentus-agent-aarch64-codex_chat:0.4.3`
+   - `ghcr.io/<owner>/lentus-agent-armv7-codex_chat:0.4.3`
 
 Home Assistant then pulls prebuilt images directly (faster, more reliable than local build).
 

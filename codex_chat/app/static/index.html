@@ -244,6 +244,12 @@
       margin-top: 2px;
       min-height: 14px;
     }
+    .limits-line {
+      color: var(--muted);
+      font-size: 11px;
+      margin-top: 2px;
+      min-height: 14px;
+    }
     .route-select-wrap {
       display: inline-flex;
       align-items: center;
@@ -387,6 +393,7 @@
           <div class="title">Codex Chat v__APP_VERSION__</div>
           <div id="status" class="status">Loading...</div>
           <div id="sessionContext" class="context-line"></div>
+          <div id="usageLimits" class="limits-line"></div>
         </div>
         <div class="toolbar">
           <button id="openThreadsBtn" class="secondary mobile-only">Threads</button>
@@ -423,6 +430,7 @@
       messages: document.getElementById('messages'),
       status: document.getElementById('status'),
       sessionContext: document.getElementById('sessionContext'),
+      usageLimits: document.getElementById('usageLimits'),
       input: document.getElementById('input'),
       refreshBtn: document.getElementById('refreshBtn'),
       sidebarPanel: document.getElementById('sidebarPanel'),
@@ -519,6 +527,13 @@
         routeLabels: {},
       },
       activeRoute: 'lentus',
+      usageLimits: {
+        loaded: false,
+        ok: false,
+        fiveHourRemainingPct: null,
+        weeklyRemainingPct: null,
+        updatedAt: '',
+      },
     };
     const ACTIVE_TURN_POLL_MS = 1000;
     const ACTIVE_TURN_MAX_SECONDS = 15 * 60;
@@ -597,6 +612,25 @@
       el.sessionContext.textContent = text;
     }
 
+    function formatPct(value) {
+      if (typeof value !== 'number' || Number.isNaN(value)) return '--';
+      return `${Math.max(0, Math.min(100, value)).toFixed(1)}%`;
+    }
+
+    function renderUsageLimits() {
+      if (!state.usageLimits.loaded) {
+        el.usageLimits.textContent = '';
+        return;
+      }
+      if (!state.usageLimits.ok) {
+        el.usageLimits.textContent = 'Limits: unavailable';
+        return;
+      }
+      const five = formatPct(state.usageLimits.fiveHourRemainingPct);
+      const weekly = formatPct(state.usageLimits.weeklyRemainingPct);
+      el.usageLimits.textContent = `Limits remaining · 5h: ${five} · weekly: ${weekly}`;
+    }
+
     function applySession(sessionData) {
       const allowedRoutes = Array.isArray(sessionData?.allowed_routes)
         ? sessionData.allowed_routes.map((v) => String(v || '').trim()).filter(Boolean)
@@ -641,6 +675,28 @@
       return session;
     }
 
+    async function loadUsageLimits(routeOverride = null) {
+      try {
+        const data = await api(withRoute('./api/usage/limits', routeOverride));
+        state.usageLimits = {
+          loaded: true,
+          ok: !!data.ok,
+          fiveHourRemainingPct: typeof data.five_hour_remaining_pct === 'number' ? data.five_hour_remaining_pct : null,
+          weeklyRemainingPct: typeof data.weekly_remaining_pct === 'number' ? data.weekly_remaining_pct : null,
+          updatedAt: String(data.updated_at || ''),
+        };
+      } catch (_err) {
+        state.usageLimits = {
+          loaded: true,
+          ok: false,
+          fiveHourRemainingPct: null,
+          weeklyRemainingPct: null,
+          updatedAt: '',
+        };
+      }
+      renderUsageLimits();
+    }
+
     function sleep(ms) {
       return new Promise((resolve) => setTimeout(resolve, ms));
     }
@@ -652,6 +708,15 @@
     function isTerminalTurnStatus(status) {
       const s = normalizeTurnStatus(status);
       return s === 'completed' || s === 'failed' || s === 'error' || s === 'cancelled' || s === 'canceled';
+    }
+
+    function isEffectivelyCompleteTurn(turn, elapsedSeconds) {
+      const status = normalizeTurnStatus(turn?.status) || 'in_progress';
+      if (isTerminalTurnStatus(status)) return true;
+      // Some relay/app-server paths can leave status inProgress even after response text
+      // is already materialized; treat this as complete after a short grace window.
+      const agentCount = countAgentMessages(turn);
+      return agentCount > 0 && elapsedSeconds >= 2;
     }
 
     function getTurnById(threadData, turnId) {
@@ -710,7 +775,7 @@
           if (turn) {
             const status = normalizeTurnStatus(turn.status) || 'in_progress';
             const agentCount = countAgentMessages(turn);
-            if (isTerminalTurnStatus(status)) {
+            if (isEffectivelyCompleteTurn(turn, elapsed)) {
               return data;
             }
             setStatus(`Running (${elapsed}s) • ${status}${agentCount ? ` • ${agentCount} update(s)` : ''}`);
@@ -789,7 +854,7 @@
           if (turn) {
             const status = normalizeTurnStatus(turn.status) || 'in_progress';
             const agentCount = countAgentMessages(turn);
-            if (isTerminalTurnStatus(status)) {
+            if (isEffectivelyCompleteTurn(turn, elapsed)) {
               closeAll();
               return data;
             }
@@ -1089,6 +1154,7 @@
         state.threads = data.data || [];
       };
       await fetchThreads();
+      await loadUsageLimits(state.activeRoute);
       if (state.requestedThreadId) {
         const exists = state.threads.some((t) => t.id === state.requestedThreadId);
         if (!exists) {
@@ -1252,6 +1318,7 @@
       state.selectedThreadId = null;
       state.lastThreadUpdatedAt = 0;
       renderSessionContext();
+      renderUsageLimits();
       await loadThreads();
       closeMobileActions();
     };
@@ -1379,7 +1446,7 @@
     }
     resetAutoRefreshTimer();
     Promise.all([loadTtsConfig(), loadSession()])
-      .then(() => loadThreads())
+      .then(() => Promise.all([loadThreads(), loadUsageLimits()]))
       .catch((e) => setStatus(String(e), true));
   </script>
 </body>

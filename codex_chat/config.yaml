@@ -1,9 +1,9 @@
 name: Codex Chat
-version: 0.4.1
+version: 0.4.3
 slug: codex_chat
 description: Chat with Codex relay from Home Assistant (threads, history, resume, turns).
 url: https://github.com/olekspa/ha_addon_codex_chat
-image: ghcr.io/olekspa/{arch}-codex_chat
+image: ghcr.io/olekspa/lentus-agent-{arch}-codex_chat
 arch:
   - amd64
   - aarch64
@@ -16,6 +16,7 @@ ingress_port: 8099
 homeassistant_api: true
 panel_icon: mdi:chat-processing
 panel_title: Codex Chat
+panel_admin: false
 ports: {}
 ports_description: {}
 options:
