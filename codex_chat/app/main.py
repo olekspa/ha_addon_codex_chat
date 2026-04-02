@@ -688,6 +688,10 @@ def _entry_window_name(entry: dict[str, Any]) -> str:
 
 
 def _entry_window_seconds(entry: dict[str, Any]) -> float | None:
+    for key in ("window_minutes", "windowMinutes", "period_minutes", "periodMinutes", "windowDurationMins"):
+        value = _safe_float(entry.get(key))
+        if value is not None and value > 0:
+            return value * 60.0
     for key in ("window_seconds", "windowSeconds", "period_seconds", "periodSeconds", "duration_seconds", "durationSeconds"):
         value = _safe_float(entry.get(key))
         if value is not None and value > 0:
