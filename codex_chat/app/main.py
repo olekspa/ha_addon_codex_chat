@@ -26,7 +26,7 @@ THREADS_CACHE_TTL_S = 2.5
 THREADS_CACHE_LOCK = threading.Lock()
 THREADS_CACHE: dict[str, Any] = {"key": None, "expires": 0.0, "data": None}
 DEFAULT_NOTIFY_TEXT_MAX_CHARS = int(os.getenv("NOTIFY_TEXT_MAX_CHARS", "4000"))
-APP_VERSION = "0.4.4"
+APP_VERSION = "0.4.7"
 ROUTE_LENTUS = "lentus"
 ROUTE_MULSUS = "mulsus"
 VALID_ROUTES = {ROUTE_LENTUS, ROUTE_MULSUS}
@@ -63,6 +63,13 @@ FORBIDDEN_BUTTON_BY_ID_RE = re.compile(
     + r")['\"][^>]*>.*?</button>",
     re.IGNORECASE | re.DOTALL,
 )
+
+
+def invalidate_threads_cache() -> None:
+    with THREADS_CACHE_LOCK:
+        THREADS_CACHE["key"] = None
+        THREADS_CACHE["expires"] = 0.0
+        THREADS_CACHE["data"] = None
 
 
 class Settings(BaseModel):
@@ -1143,7 +1150,9 @@ async def api_thread_start(
     session = await resolve_user_session(request, settings)
     route_context = resolve_route_context(settings, session, route)
     payload = body.model_dump(exclude_none=True)
-    return await relay_post(route_context, "/threads/start", payload)
+    out = await relay_post(route_context, "/threads/start", payload)
+    invalidate_threads_cache()
+    return out
 
 
 @app.post("/api/threads/{thread_id}/resume")
@@ -1157,7 +1166,9 @@ async def api_thread_resume(
     session = await resolve_user_session(request, settings)
     route_context = resolve_route_context(settings, session, route)
     payload = body.model_dump(exclude_none=True)
-    return await relay_post(route_context, f"/threads/{thread_id}/resume", payload)
+    out = await relay_post(route_context, f"/threads/{thread_id}/resume", payload)
+    invalidate_threads_cache()
+    return out
 
 
 @app.post("/api/threads/{thread_id}/archive")
@@ -1173,6 +1184,7 @@ async def api_thread_archive(
     # Use generic rpc endpoint to support archive/unarchive without relay-specific wrappers.
     method = "thread/archive" if body.archived else "thread/unarchive"
     out = await relay_post(route_context, "/rpc", {"method": method, "params": {"threadId": thread_id}})
+    invalidate_threads_cache()
     return out.get("result", out)
 
 
@@ -1190,6 +1202,7 @@ async def api_thread_materialize(
         await relay_post(route_context, f"/threads/{thread_id}/resume", {})
     except HTTPException:
         pass
+    invalidate_threads_cache()
     return await thread_read_with_route(route_context, thread_id=thread_id, include_turns=False)
 
 
@@ -1245,6 +1258,7 @@ async def api_turn_start(
             except Exception:
                 # Fallback to original result; frontend can still refresh.
                 pass
+    invalidate_threads_cache()
     return result
 
 

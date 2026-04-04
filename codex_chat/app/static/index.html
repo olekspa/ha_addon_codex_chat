@@ -14,6 +14,7 @@
       --accent: #0f766e;
       --accent-2: #115e59;
       --warn: #b91c1c;
+      --focus: #14b8a6;
     }
     * { box-sizing: border-box; }
     body {
@@ -37,7 +38,7 @@
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 14px;
-      box-shadow: 0 6px 20px rgba(15, 23, 42, 0.07);
+      box-shadow: 0 7px 24px rgba(15, 23, 42, 0.08);
       overflow: hidden;
     }
     .sidebar-header, .chat-header {
@@ -100,11 +101,18 @@
       padding: 11px 12px;
       border-bottom: 1px solid #eceef1;
       cursor: pointer;
-      transition: background 140ms ease;
+      transition: background 140ms ease, border-color 140ms ease;
     }
     .thread:hover { background: #f8fafc; }
     .thread.active { background: #ecfeff; border-left: 3px solid var(--accent); padding-left: 9px; }
-    .thread .preview { font-size: 13px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .thread .preview {
+      font-size: 13px;
+      color: var(--ink);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-weight: 600;
+    }
     .thread .meta { font-size: 11px; color: var(--muted); margin-top: 3px; }
     .chat {
       display: grid;
@@ -235,9 +243,21 @@
     }
     button:hover { filter: brightness(1.06); }
     button:active { transform: translateY(1px); }
+    button:focus-visible,
+    textarea:focus-visible,
+    .toolbar input:focus-visible,
+    .toolbar select:focus-visible {
+      outline: 2px solid var(--focus);
+      outline-offset: 1px;
+    }
     button.secondary { background: #334155; }
     button:disabled { opacity: 0.55; cursor: not-allowed; }
-    .status { color: var(--muted); font-size: 12px; }
+    .status {
+      color: #0f172a;
+      font-size: 12px;
+      font-weight: 600;
+      min-height: 16px;
+    }
     .context-line {
       color: var(--muted);
       font-size: 11px;
@@ -261,6 +281,13 @@
       min-width: 104px;
     }
     .error { color: var(--warn); }
+    #threads:empty::before {
+      content: "No threads yet";
+      display: block;
+      padding: 14px 12px;
+      color: var(--muted);
+      font-size: 12px;
+    }
     .mobile-only { display: none; }
     .drawer-close {
       display: none;
