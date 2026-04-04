@@ -26,7 +26,7 @@ THREADS_CACHE_TTL_S = 2.5
 THREADS_CACHE_LOCK = threading.Lock()
 THREADS_CACHE: dict[str, Any] = {"key": None, "expires": 0.0, "data": None}
 DEFAULT_NOTIFY_TEXT_MAX_CHARS = int(os.getenv("NOTIFY_TEXT_MAX_CHARS", "4000"))
-APP_VERSION = "0.4.8"
+APP_VERSION = "0.4.9"
 ROUTE_LENTUS = "lentus"
 ROUTE_MULSUS = "mulsus"
 VALID_ROUTES = {ROUTE_LENTUS, ROUTE_MULSUS}
@@ -63,6 +63,7 @@ FORBIDDEN_BUTTON_BY_ID_RE = re.compile(
     + r")['\"][^>]*>.*?</button>",
     re.IGNORECASE | re.DOTALL,
 )
+TURN_WAIT_TIMEOUT_RE = re.compile(r"Timed out waiting for turn completion:\s*([A-Za-z0-9._:-]+)")
 
 
 def invalidate_threads_cache() -> None:
@@ -400,6 +401,26 @@ def detail_text(detail: Any) -> str:
         return str(detail)
 
 
+def detail_error_text(detail: Any) -> str:
+    text = detail_text(detail)
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return text
+    if isinstance(parsed, dict):
+        error = parsed.get("error")
+        if isinstance(error, str) and error.strip():
+            return error.strip()
+    return text
+
+
+def extract_timeout_turn_id(detail: Any) -> str:
+    match = TURN_WAIT_TIMEOUT_RE.search(detail_error_text(detail))
+    if not match:
+        return ""
+    return match.group(1).strip()
+
+
 def _truncate_text(value: str, max_chars: int) -> tuple[str, bool]:
     text = value or ""
     if max_chars <= 0 or len(text) <= max_chars:
@@ -461,11 +482,17 @@ def supervisor_headers() -> dict[str, str]:
     }
 
 
-async def ha_service_call(service: str, payload: dict[str, Any]) -> Any:
+async def ha_service_call(service: str, payload: dict[str, Any], timeout_s: float | None = None) -> Any:
     domain, name = parse_service(service)
     url = f"http://supervisor/core/api/services/{domain}/{name}"
     settings = load_settings()
-    async with httpx.AsyncClient(timeout=max(15, settings.wait_timeout)) as client:
+    if timeout_s is None:
+        # Assist flows can cascade into a full Codex turn and exceed the normal service budget.
+        if service == "conversation.process":
+            timeout_s = max(30.0, float(settings.wait_timeout) + 60.0)
+        else:
+            timeout_s = float(max(15, settings.wait_timeout))
+    async with httpx.AsyncClient(timeout=timeout_s) as client:
         try:
             resp = await client.post(url, headers=supervisor_headers(), json=payload)
         except Exception as exc:
@@ -540,6 +567,31 @@ def thread_has_agent_message(thread: dict[str, Any]) -> bool:
     return False
 
 
+def thread_find_turn_by_id(thread: dict[str, Any], turn_id: str) -> dict[str, Any] | None:
+    turns = thread.get("turns")
+    if not isinstance(turns, list):
+        return None
+    for turn in turns:
+        if isinstance(turn, dict) and str(turn.get("id") or "") == turn_id:
+            return turn
+    return None
+
+
+def turn_has_agent_message(turn: dict[str, Any]) -> bool:
+    items = turn.get("items")
+    if not isinstance(items, list):
+        return False
+    for item in items:
+        if isinstance(item, dict) and item.get("type") == "agentMessage":
+            return True
+    return False
+
+
+def turn_is_terminal(turn: dict[str, Any]) -> bool:
+    status = str(turn.get("status") or "").strip().lower()
+    return status in {"completed", "failed", "error", "cancelled", "canceled"}
+
+
 async def poll_until_agent_message(
     route_context: RouteContext,
     thread_id: str,
@@ -554,6 +606,27 @@ async def poll_until_agent_message(
         thread = extract_thread(result)
         if thread and thread_has_agent_message(thread):
             return result
+        await asyncio.sleep(max(0.2, poll_s))
+    return last_result or await relay_get(route_context, f"/threads/{thread_id}", params={"includeTurns": "true"})
+
+
+async def poll_until_turn_ready(
+    route_context: RouteContext,
+    thread_id: str,
+    turn_id: str,
+    timeout_s: int,
+    poll_s: float,
+) -> dict[str, Any]:
+    deadline = time.time() + max(3, timeout_s)
+    last_result: dict[str, Any] | None = None
+    while time.time() < deadline:
+        result = await relay_get(route_context, f"/threads/{thread_id}", params={"includeTurns": "true"})
+        last_result = result
+        thread = extract_thread(result)
+        if thread:
+            turn = thread_find_turn_by_id(thread, turn_id)
+            if turn and (turn_has_agent_message(turn) or turn_is_terminal(turn)):
+                return result
         await asyncio.sleep(max(0.2, poll_s))
     return last_result or await relay_get(route_context, f"/threads/{thread_id}", params={"includeTurns": "true"})
 
@@ -1238,6 +1311,41 @@ async def api_turn_start(
         if "thread not found" in text:
             await relay_post(route_context, f"/threads/{thread_id}/resume", {})
             result = await relay_post(route_context, f"/threads/{thread_id}/turns", {"text": body.text}, params=params)
+        elif wait and exc.status_code == 504:
+            timeout_turn_id = extract_timeout_turn_id(exc.detail)
+            if not timeout_turn_id:
+                raise
+            grace_s = min(45, max(10, int(wait_timeout)))
+            LOG.warning(
+                "Turn wait timeout for thread_id=%s turn_id=%s; polling grace window %ss",
+                thread_id,
+                timeout_turn_id,
+                grace_s,
+            )
+            try:
+                recovered_thread_read = await poll_until_turn_ready(
+                    route_context=route_context,
+                    thread_id=thread_id,
+                    turn_id=timeout_turn_id,
+                    timeout_s=grace_s,
+                    poll_s=settings.poll_interval,
+                )
+            except Exception:
+                LOG.exception(
+                    "Failed timeout recovery poll for thread_id=%s turn_id=%s",
+                    thread_id,
+                    timeout_turn_id,
+                )
+                raise
+            thread = extract_thread(recovered_thread_read)
+            turn = thread_find_turn_by_id(thread, timeout_turn_id) if thread else None
+            if not turn or not (turn_has_agent_message(turn) or turn_is_terminal(turn)):
+                raise
+            result = {
+                "turnStart": {"turn": {"id": timeout_turn_id}},
+                "threadRead": recovered_thread_read,
+                "timeoutRecovered": True,
+            }
         else:
             raise
 
