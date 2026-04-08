@@ -14,7 +14,6 @@
       --accent: #0f766e;
       --accent-2: #115e59;
       --warn: #b91c1c;
-      --focus: #14b8a6;
     }
     * { box-sizing: border-box; }
     body {
@@ -38,7 +37,7 @@
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 14px;
-      box-shadow: 0 7px 24px rgba(15, 23, 42, 0.08);
+      box-shadow: 0 6px 20px rgba(15, 23, 42, 0.07);
       overflow: hidden;
     }
     .sidebar-header, .chat-header {
@@ -101,18 +100,11 @@
       padding: 11px 12px;
       border-bottom: 1px solid #eceef1;
       cursor: pointer;
-      transition: background 140ms ease, border-color 140ms ease;
+      transition: background 140ms ease;
     }
     .thread:hover { background: #f8fafc; }
     .thread.active { background: #ecfeff; border-left: 3px solid var(--accent); padding-left: 9px; }
-    .thread .preview {
-      font-size: 13px;
-      color: var(--ink);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      font-weight: 600;
-    }
+    .thread .preview { font-size: 13px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .thread .meta { font-size: 11px; color: var(--muted); margin-top: 3px; }
     .chat {
       display: grid;
@@ -135,25 +127,6 @@
       line-height: 1.35;
       white-space: pre-wrap;
       box-shadow: 0 2px 7px rgba(15, 23, 42, 0.05);
-    }
-    .msg-actions {
-      display: flex;
-      justify-content: flex-end;
-      margin-bottom: 6px;
-    }
-    .msg-select-btn {
-      border: 1px solid #cbd5e1;
-      background: #ffffff;
-      color: #334155;
-      border-radius: 8px;
-      padding: 2px 8px;
-      font-size: 11px;
-      font-weight: 600;
-      line-height: 1.2;
-    }
-    .msg-select-btn:hover {
-      background: #f8fafc;
-      filter: none;
     }
     .msg-content {
       white-space: normal;
@@ -262,21 +235,9 @@
     }
     button:hover { filter: brightness(1.06); }
     button:active { transform: translateY(1px); }
-    button:focus-visible,
-    textarea:focus-visible,
-    .toolbar input:focus-visible,
-    .toolbar select:focus-visible {
-      outline: 2px solid var(--focus);
-      outline-offset: 1px;
-    }
     button.secondary { background: #334155; }
     button:disabled { opacity: 0.55; cursor: not-allowed; }
-    .status {
-      color: #0f172a;
-      font-size: 12px;
-      font-weight: 600;
-      min-height: 16px;
-    }
+    .status { color: var(--muted); font-size: 12px; }
     .context-line {
       color: var(--muted);
       font-size: 11px;
@@ -300,13 +261,6 @@
       min-width: 104px;
     }
     .error { color: var(--warn); }
-    #threads:empty::before {
-      content: "No threads yet";
-      display: block;
-      padding: 14px 12px;
-      color: var(--muted);
-      font-size: 12px;
-    }
     .mobile-only { display: none; }
     .drawer-close {
       display: none;
@@ -645,6 +599,31 @@
       if (!route) return safePath;
       const sep = safePath.includes('?') ? '&' : '?';
       return `${safePath}${sep}route=${encodeURIComponent(route)}`;
+    }
+
+    function extractThreadId(payload) {
+      if (!payload) return '';
+      if (typeof payload === 'string') return '';
+      if (Array.isArray(payload)) {
+        for (const item of payload) {
+          const found = extractThreadId(item);
+          if (found) return found;
+        }
+        return '';
+      }
+      if (typeof payload === 'object') {
+        if (typeof payload.threadId === 'string' && payload.threadId.trim()) return payload.threadId.trim();
+        const thread = payload.thread;
+        if (thread && typeof thread === 'object') {
+          const tid = thread.id || thread.threadId;
+          if (typeof tid === 'string' && tid.trim()) return tid.trim();
+        }
+        for (const key of Object.keys(payload)) {
+          const found = extractThreadId(payload[key]);
+          if (found) return found;
+        }
+      }
+      return '';
     }
 
     function agentLabelFor(routeKey) {
@@ -1105,12 +1084,6 @@
       const rich = Boolean(opts.rich);
       const d = document.createElement('div');
       d.className = 'msg ' + (type === 'user' ? 'user' : 'agent') + (extraClass ? ` ${extraClass}` : '');
-      const actions = document.createElement('div');
-      actions.className = 'msg-actions';
-      const selectBtn = document.createElement('button');
-      selectBtn.type = 'button';
-      selectBtn.className = 'msg-select-btn';
-      selectBtn.textContent = 'Select';
       const content = document.createElement('div');
       content.className = 'msg-content';
       if (rich) {
@@ -1118,31 +1091,9 @@
       } else {
         content.textContent = text || '';
       }
-      selectBtn.onclick = (evt) => {
-        evt.preventDefault();
-        evt.stopPropagation();
-        selectMessageContent(content);
-      };
-      actions.appendChild(selectBtn);
-      d.appendChild(actions);
       d.appendChild(content);
       el.messages.appendChild(d);
       el.messages.scrollTop = el.messages.scrollHeight;
-    }
-
-    function selectMessageContent(contentEl) {
-      if (!contentEl) return;
-      try {
-        const selection = window.getSelection();
-        if (!selection) return;
-        const range = document.createRange();
-        range.selectNodeContents(contentEl);
-        selection.removeAllRanges();
-        selection.addRange(range);
-        setStatus('Message text selected. Long-press and tap Speak.');
-      } catch (err) {
-        setStatus(`Could not select message text: ${String(err)}`, true);
-      }
     }
 
     function renderThreadMessages(threadData) {
@@ -1224,7 +1175,7 @@
       const cwd = getConfiguredCwd();
       const suffix = cwd ? `&cwd=${encodeURIComponent(cwd)}` : '';
       const fetchThreads = async (routeOverride = null) => {
-        const data = await api(withRoute(`./api/threads?limit=50&sourceKinds=vscode${suffix}`, routeOverride));
+        const data = await api(withRoute(`./api/threads?limit=50${suffix}`, routeOverride));
         state.threads = data.data || [];
       };
       await fetchThreads();
@@ -1294,7 +1245,7 @@
           cwd: cwd || undefined,
         }),
       });
-      const id = data?.thread?.id;
+      const id = extractThreadId(data);
       if (!id) throw new Error('thread/start returned no id');
       state.selectedThreadId = id;
       await loadThreads();
@@ -1439,7 +1390,7 @@
         try {
           const cwd = getConfiguredCwd();
           const suffix = cwd ? `&cwd=${encodeURIComponent(cwd)}` : '';
-          const delta = await api(withRoute(`./api/threads?limit=50&sourceKinds=vscode&updatedAfter=${state.lastThreadUpdatedAt}${suffix}`));
+          const delta = await api(withRoute(`./api/threads?limit=50&updatedAfter=${state.lastThreadUpdatedAt}${suffix}`));
           if ((delta.data || []).length > 0) {
             await loadThreads();
             await loadThread(state.selectedThreadId, true);
