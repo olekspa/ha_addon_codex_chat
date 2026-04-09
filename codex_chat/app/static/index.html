@@ -722,6 +722,40 @@
       renderUsageLimits();
     }
 
+    function summarizeThreadForList(threadId, threadData) {
+      const thread = threadData?.thread && typeof threadData.thread === 'object' ? threadData.thread : {};
+      const now = Math.floor(Date.now() / 1000);
+      const preview = String(thread.preview || thread.title || thread.subject || '(new thread)').trim() || '(new thread)';
+      const source = String(thread.source || thread.sourceKind || thread.origin || 'unknown').trim() || 'unknown';
+      const updatedAt = Number(thread.updatedAt || thread.updated_at || thread.lastUpdatedAt || now) || now;
+      const createdAt = Number(thread.createdAt || thread.created_at || thread.startedAt || updatedAt || now) || updatedAt;
+      return {
+        id: threadId,
+        preview,
+        source,
+        updatedAt,
+        createdAt,
+      };
+    }
+
+    function upsertThreadSummary(threadId, threadData) {
+      if (!threadId) return false;
+      const next = summarizeThreadForList(threadId, threadData);
+      const idx = state.threads.findIndex((t) => t.id === threadId);
+      if (idx >= 0) {
+        const prev = state.threads[idx] || {};
+        state.threads[idx] = {
+          ...prev,
+          ...next,
+          preview: next.preview === '(new thread)' && prev.preview ? prev.preview : next.preview,
+          source: next.source === 'unknown' && prev.source ? prev.source : next.source,
+        };
+        return false;
+      }
+      state.threads = [next, ...state.threads];
+      return true;
+    }
+
     function sleep(ms) {
       return new Promise((resolve) => setTimeout(resolve, ms));
     }
@@ -1174,22 +1208,23 @@
       setStatus(`Loading threads (${agentLabelFor(state.activeRoute)})...`);
       const cwd = getConfiguredCwd();
       const suffix = cwd ? `&cwd=${encodeURIComponent(cwd)}` : '';
+      const requestedThreadId = state.requestedThreadId;
       const fetchThreads = async (routeOverride = null) => {
         const data = await api(withRoute(`./api/threads?limit=50${suffix}`, routeOverride));
         state.threads = data.data || [];
       };
       await fetchThreads();
       await loadUsageLimits(state.activeRoute);
-      if (state.requestedThreadId) {
-        const exists = state.threads.some((t) => t.id === state.requestedThreadId);
+      if (requestedThreadId) {
+        const exists = state.threads.some((t) => t.id === requestedThreadId);
         if (!exists) {
-          const materializedCurrent = await tryMaterializeThreadInRoute(state.requestedThreadId, state.activeRoute);
+          const materializedCurrent = await tryMaterializeThreadInRoute(requestedThreadId, state.activeRoute);
           if (materializedCurrent) {
             await fetchThreads(state.activeRoute);
           } else {
             let switched = false;
             for (const altRoute of alternateRoutes(state.activeRoute)) {
-              const materializedAlt = await tryMaterializeThreadInRoute(state.requestedThreadId, altRoute);
+              const materializedAlt = await tryMaterializeThreadInRoute(requestedThreadId, altRoute);
               if (!materializedAlt) continue;
               state.activeRoute = altRoute;
               if (el.agentRouteSelect && el.agentRouteSelect.value !== altRoute) {
@@ -1206,13 +1241,15 @@
             }
           }
         }
-        if (state.threads.some((t) => t.id === state.requestedThreadId)) {
-          state.selectedThreadId = state.requestedThreadId;
+        if (state.threads.some((t) => t.id === requestedThreadId)) {
+          state.selectedThreadId = requestedThreadId;
         }
         state.requestedThreadId = null;
       }
       if (state.selectedThreadId && !state.threads.some((t) => t.id === state.selectedThreadId)) {
-        state.selectedThreadId = null;
+        if (requestedThreadId !== state.selectedThreadId) {
+          state.selectedThreadId = null;
+        }
       }
       state.lastThreadUpdatedAt = state.threads.reduce((m, t) => Math.max(m, t.updatedAt || 0), 0);
       if (!state.selectedThreadId && state.threads.length) {
@@ -1230,8 +1267,10 @@
       if (!silent) setStatus('Loading thread...');
       const data = await api(withRoute(`./api/threads/${threadId}?includeTurns=true`));
       renderThreadMessages(data);
+      upsertThreadSummary(threadId, data);
       const found = state.threads.find(t => t.id === threadId);
       if (found && found.updatedAt) state.lastThreadUpdatedAt = Math.max(state.lastThreadUpdatedAt, found.updatedAt);
+      renderThreads();
       if (!silent) setStatus(`Thread ${threadId.slice(0,8)} loaded`);
     }
 
@@ -1248,7 +1287,15 @@
       const id = extractThreadId(data);
       if (!id) throw new Error('thread/start returned no id');
       state.selectedThreadId = id;
-      await loadThreads();
+      state.requestedThreadId = id;
+      upsertThreadSummary(id, data);
+      renderThreads();
+      try {
+        await loadThread(id, true);
+      } catch (_err) {
+        // The thread may need a moment to materialize in the relay.
+      }
+      void loadThreads().catch((e) => setStatus(String(e), true));
       setStatus(`New thread ${id.slice(0,8)} created`);
     }
 
@@ -1281,23 +1328,17 @@
 
         const out = await api(withRoute(`./api/threads/${state.selectedThreadId}/turns`), {
           method: 'POST',
-          body: JSON.stringify({ text, wait: false }),
+          body: JSON.stringify({ text, wait: true }),
         });
 
-        const turnId = out?.turn?.id || null;
-        let read = out?.threadRead || null;
+        let read = typeof out?.threadRead === 'object' && out.threadRead ? out.threadRead : null;
         if (read) {
           renderThreadMessages(read);
-        }
-        if (turnId) {
-          read = await monitorTurnProgress(state.selectedThreadId, turnId);
         } else {
           read = await api(withRoute(`./api/threads/${state.selectedThreadId}?includeTurns=true`));
           renderThreadMessages(read);
         }
 
-        read = read || await api(withRoute(`./api/threads/${state.selectedThreadId}?includeTurns=true`));
-        renderThreadMessages(read);
         if (el.ttsAutoToggle.checked) {
           const lastAgent = extractLastAgentText(read);
           if (lastAgent) {
@@ -1309,9 +1350,9 @@
           }
         }
         setStatus('Completed');
-        await loadThreads();
         state.lastFailedMessage = null;
         el.retryBtn.style.display = 'none';
+        void loadThreads().catch((e) => setStatus(String(e), true));
       } catch (err) {
         setStatus(String(err), true);
         state.lastFailedMessage = text;

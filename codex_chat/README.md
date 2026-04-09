@@ -114,5 +114,5 @@ python3 relay/codex_relay.py --host 0.0.0.0 --port 8765
 The add-on uses:
 - `image: ghcr.io/olekspa/ha-addon-codex-chat-repo-{arch}`
 
-So version `0.4.5` must exist as image tags:
-- `ghcr.io/olekspa/ha-addon-codex-chat-repo-amd64:0.4.5`
+So version `0.4.11` must exist as image tags:
+- `ghcr.io/olekspa/ha-addon-codex-chat-repo-amd64:0.4.11`
